@@ -3,7 +3,6 @@ import SwiftUI
 // MARK: - Cover
 
 struct CoverView: View {
-    @Environment(AppModel.self) private var app
     let book: Book
     var maxPixel = 520
     var cornerRadius: CGFloat = 5
@@ -34,7 +33,7 @@ struct CoverView: View {
                     image = nil
                     return
                 }
-                let loaded = await CoverCache.shared.image(at: app.store.coverURL(for: book), key: key,
+                let loaded = await CoverCache.shared.image(at: LibraryStore.coverURL(for: book.id), key: key,
                                                            maxPixel: maxPixel)
                 withAnimation(.easeOut(duration: 0.2)) { image = loaded }
             }

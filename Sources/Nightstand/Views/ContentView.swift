@@ -45,6 +45,12 @@ struct ContentView: View {
         .sheet(item: $app.editing) { book in
             MetadataEditor(book: book)
         }
+        .sheet(item: $app.lookingUp) { book in
+            LookupSheet(book: book)
+        }
+        .sheet(item: $app.cleanUp) { session in
+            CleanUpSheet(proposals: session.proposals)
+        }
         .confirmationDialog(deleteTitle, isPresented: $app.showDeleteConfirmation) {
             Button("Move to Trash", role: .destructive) { app.confirmDelete() }
             Button("Cancel", role: .cancel) {}

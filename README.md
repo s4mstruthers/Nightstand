@@ -15,6 +15,13 @@ read, and send books to your e-reader — without the clutter.
 - **Formatting** — optionally restyle books as they are sent: base font size, line spacing, alignment,
   paragraph style, margins and hyphenation.
 - **Import from Calibre** — brings over your books, covers, series, tags and ratings. Calibre is left untouched.
+- **Clean up details** — fixes "Wong, Tao" style author names, pulls series out of titles like
+  "Rebel Star (System Apocalypse Book 8)" and settles on one spelling per author and series. You review
+  every change first.
+- **Look up details online** — search Open Library and Google Books for a book and choose which details and
+  cover to take. Runs only when you ask.
+- **Import from Goodreads** — fills in ratings, read status, dates read, reviews and shelves for books you
+  already have, from your Goodreads library export.
 
 Supported formats: EPUB, KEPUB, PDF, MOBI, AZW3, AZW, FB2, CBZ, CBR, DjVu and TXT.
 

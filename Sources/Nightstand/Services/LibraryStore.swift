@@ -60,6 +60,12 @@ final class LibraryStore {
 
     // MARK: Paths
 
+    /// Cover location in the default library. Static so cover views work without the environment, which
+    /// lazily created table cells do not always receive.
+    nonisolated static func coverURL(for id: UUID) -> URL {
+        defaultRoot.appending(path: "Books/\(id.uuidString)/cover.jpg")
+    }
+
     func folder(for book: Book) -> URL { booksFolder.appending(path: book.id.uuidString) }
     func fileURL(for book: Book) -> URL { folder(for: book).appending(path: book.fileName) }
     func coverURL(for book: Book) -> URL { folder(for: book).appending(path: "cover.jpg") }

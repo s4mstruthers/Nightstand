@@ -56,6 +56,24 @@ final class SnapshotTests: XCTestCase {
             try render(MetadataEditor(book: first).environment(app), size: NSSize(width: 640, height: 560),
                        to: folder.appending(path: "editor.png"))
         }
+        let proposals = MetadataCleaner.proposals(for: Set(books.map(\.id)), in: app.store.books)
+        if !proposals.isEmpty {
+            try render(CleanUpSheet(proposals: proposals).environment(app), size: NSSize(width: 620, height: 600),
+                       to: folder.appending(path: "cleanup.png"))
+        }
+        // Live search, so this also checks the catalogues respond.
+        if let first = books.first(where: { $0.title.contains("Brave New World") }) ?? books.first {
+            let found = await MetadataLookup.search(title: first.title, author: "")
+            print("LOOKUP: \(found.candidates.count) results, unavailable: \(found.unavailable)")
+            for candidate in found.candidates.prefix(4) {
+                print("LOOKUP \(candidate.source): \(candidate.title) — \(candidate.authors.joined(separator: ", ")) — cover \(candidate.coverURL != nil)")
+            }
+            if let key = found.candidates.first?.workKey {
+                print("LOOKUP description: \((await MetadataLookup.openLibraryDescription(workKey: key) ?? "none").prefix(80))")
+            }
+            try render(LookupSheet(book: first).environment(app), size: NSSize(width: 780, height: 560),
+                       to: folder.appending(path: "lookup.png"))
+        }
         app.settings.format.applyFormatting = true
         try render(SettingsView().environment(app), size: NSSize(width: 520, height: 760),
                    to: folder.appending(path: "settings.png"))

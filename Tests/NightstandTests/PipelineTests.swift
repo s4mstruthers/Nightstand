@@ -180,6 +180,196 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(cover).prefix(4), Data([0x89, 0x50, 0x4E, 0x47]))
     }
 
+    func testGoodreadsImportMatchesAndFillsWithoutOverwriting() {
+        let csv = """
+        Book Id,Title,Author,Author l-f,Additional Authors,ISBN,ISBN13,My Rating,Date Read,Bookshelves,Exclusive Shelf,My Review
+        1,"Atomic Habits: An Easy & Proven Way to Build Good Habits",James Clear,"Clear, James",,="0735211299",="9780735211292",5.0,2024/03/09,"self-help, favourites",read,"Loved it.<br/>Said ""wow"",
+        twice."
+        2,"The Final Empire (Mistborn, #1)",Brandon Sanderson,"Sanderson, Brandon",,="",="",4,,fantasy,currently-reading,
+        3,Not In Library,Some Body,"Body, Some",,="",="",3,,,to-read,
+        """
+        let entries = Goodreads.parse(csv)
+        XCTAssertEqual(entries.count, 3)
+        XCTAssertEqual(entries[0].review, "Loved it.\nSaid \"wow\",\ntwice.")
+        XCTAssertEqual(entries[0].isbns, ["0735211299", "9780735211292"])
+        XCTAssertEqual(entries[1].title, "The Final Empire")
+        XCTAssertEqual(entries[1].series, "Mistborn")
+        XCTAssertEqual(entries[1].seriesIndex, 1)
+
+        // Matches a differently worded subtitle and "Last, First" author; keeps the user's own rating.
+        var habits = Book(title: "Atomic Habits: Tiny Changes, Remarkable Results", format: .epub)
+        habits.authors = ["Clear, James"]
+        habits.rating = 3
+        XCTAssertTrue(Goodreads.matches(entries[0], habits))
+        XCTAssertTrue(Goodreads.apply(entries[0], to: &habits))
+        XCTAssertEqual(habits.rating, 3)
+        XCTAssertEqual(habits.status, .finished)
+        XCTAssertNotNil(habits.dateFinished)
+        XCTAssertEqual(habits.tags, ["self-help", "favourites"])
+        XCTAssertTrue(habits.notes.hasPrefix("Loved it."))
+
+        var mistborn = Book(title: "The Final Empire", format: .kepub)
+        mistborn.authors = ["Brandon Sanderson"]
+        XCTAssertTrue(Goodreads.matches(entries[1], mistborn))
+        XCTAssertFalse(Goodreads.matches(entries[2], mistborn))
+        XCTAssertTrue(Goodreads.apply(entries[1], to: &mistborn))
+        XCTAssertEqual(mistborn.rating, 4)
+        XCTAssertEqual(mistborn.status, .reading)
+        XCTAssertEqual(mistborn.seriesText, "Mistborn #1")
+
+        XCTAssertEqual(Goodreads.titleKey("How to Win Friends & Influence People"),
+                       Goodreads.titleKey("How To Win Friends and Influence People"))
+        XCTAssertEqual(Goodreads.titleKey("Ritual of Ruin (King's Dark Tidings Book 7)"), "ritualofruin")
+        XCTAssertEqual(Goodreads.titleKey("Defiance of the Fall 3 (Defiance of the Fall, #3)"),
+                       Goodreads.titleKey("Defiance of the Fall 3: A LitRPG Adventure"))
+
+        // Same title by a different author is not a match.
+        var other = Book(title: "The Final Empire", format: .epub)
+        other.authors = ["Jane Doe"]
+        XCTAssertFalse(Goodreads.matches(entries[1], other))
+    }
+
+    func testCleanerFixesAuthorsAndFindsSeries() {
+        XCTAssertEqual(MetadataCleaner.cleanAuthors(["Wong, Tao"]), ["Tao Wong"])
+        XCTAssertEqual(MetadataCleaner.cleanAuthors(["Voss, Chris", "Raz, Tahl"]), ["Chris Voss", "Tahl Raz"])
+        XCTAssertEqual(MetadataCleaner.cleanAuthors(["Voss, Chris, Raz, Tahl"]), ["Chris Voss", "Tahl Raz"])
+        XCTAssertEqual(MetadataCleaner.cleanAuthors(["Benjamin Graham; Jason Zweig"]), ["Benjamin Graham", "Jason Zweig"])
+        XCTAssertEqual(MetadataCleaner.cleanAuthors(["Robert B. Cialdini, PhD"]), ["Robert B. Cialdini"])
+        XCTAssertEqual(MetadataCleaner.cleanAuthors(["Evelyn Tribole, M.S., R.D."]), ["Evelyn Tribole"])
+        XCTAssertEqual(MetadataCleaner.cleanAuthors(["Haleem, M. A. S. Abdel"]), ["M. A. S. Abdel Haleem"])
+        XCTAssertEqual(MetadataCleaner.cleanAuthors(["Joe Navarro, Marvin Karlins"]), ["Joe Navarro", "Marvin Karlins"])
+        XCTAssertEqual(MetadataCleaner.cleanAuthors(["Ursula K. Le Guin"]), ["Ursula K. Le Guin"])
+        XCTAssertEqual(MetadataCleaner.cleanAuthors(["Le Guin, Ursula K."]), ["Ursula K. Le Guin"])
+        XCTAssertEqual(MetadataCleaner.cleanAuthors(["Clear, James [Clear, James], chenjin5.com"]), ["James Clear"])
+        XCTAssertEqual(MetadataCleaner.cleanAuthors(["Dave Barker-Plummer, Jon Barwise and John Etchemendy"]),
+                       ["Dave Barker-Plummer", "Jon Barwise", "John Etchemendy"])
+        XCTAssertEqual(MetadataCleaner.cleanAuthors(["Barringer, Bruce; Ireland, R.; "]), ["Bruce Barringer", "R. Ireland"])
+        XCTAssertEqual(MetadataCleaner.cleanAuthors(["Simon and Schuster"]), ["Simon and Schuster"])
+
+        func book(_ title: String, _ authors: [String], series: String? = nil, index: Double? = nil) -> Book {
+            var book = Book(title: title, format: .epub)
+            book.authors = authors
+            book.series = series
+            book.seriesIndex = index
+            return book
+        }
+        let library = [
+            book("Rebel Star: A LitRPG Post-Apocalyptic Space Opera (System Apocalypse Book 8)", ["Tao Wong"]),
+            book("System Finale: An Apocalyptic Space Opera LitRPG (The System Apocalypse Book 12)", ["Tao Wong"]),
+            book("World Unbound: An Apocalyptic LitRPG (System Apocalypse Book 6)", ["Wong, Tao"]),
+            book("Stars Awoken", ["Tao Wong"], series: "The System Apocalypse", index: 7),
+            book("Defiance of the Fall: A LitRPG Adventure", ["TheFirstDefier", "J. F. Brink"]),
+            book("Defiance of the Fall 3: A LitRPG Adventure", ["TheFirstDefier", "JF Brink"]),
+            book("Defiance of the Fall 16: A LitRPG Adventure", ["TheFirstDefier", "JF Brink"]),
+            book("Fahrenheit 451", ["Ray Bradbury"]),
+            book("1984", ["George Orwell"]),
+            book("Project Hail Mary: A Novel", ["Andy Weir"]),
+            book("Atomic Habits: An Easy and Proven Way to Build Good Habits", ["Clear, James"]),
+        ]
+        let proposals = MetadataCleaner.proposals(for: Set(library.map(\.id)), in: library)
+        func after(_ index: Int) -> Book { proposals.first { $0.id == library[index].id }?.after ?? library[index] }
+
+        // Series found in parentheses, spelled the way the library already spells it.
+        XCTAssertEqual(after(0).title, "Rebel Star")
+        XCTAssertEqual(after(0).seriesText, "The System Apocalypse #8")
+        XCTAssertEqual(after(1).title, "System Finale")
+        XCTAssertEqual(after(1).seriesText, "The System Apocalypse #12")
+        XCTAssertEqual(after(2).authors, ["Tao Wong"])
+        XCTAssertEqual(after(2).seriesText, "The System Apocalypse #6")
+
+        // Numbered titles, the unnumbered first book, and one spelling for the co-author.
+        XCTAssertEqual(after(4).title, "Defiance of the Fall")
+        XCTAssertEqual(after(4).seriesText, "Defiance of the Fall #1")
+        XCTAssertEqual(after(5).title, "Defiance of the Fall 3")
+        XCTAssertEqual(after(5).seriesText, "Defiance of the Fall #3")
+        XCTAssertEqual(after(6).seriesText, "Defiance of the Fall #16")
+        XCTAssertEqual(after(4).authors, ["TheFirstDefier", "JF Brink"])
+
+        // Titles that merely end in a number, and real subtitles, are left alone.
+        XCTAssertEqual(after(7).series, nil)
+        XCTAssertEqual(after(8).title, "1984")
+        XCTAssertEqual(after(9).title, "Project Hail Mary")
+        XCTAssertEqual(after(10).title, "Atomic Habits: An Easy and Proven Way to Build Good Habits")
+        XCTAssertEqual(after(10).authors, ["James Clear"])
+        XCTAssertNil(proposals.first { $0.id == library[7].id })
+    }
+
+    func testOpenLibraryAndGoogleParsing() throws {
+        let openLibrary = Data(#"{"docs":[{"key":"/works/OL1W","title":"Brave New World","author_name":["Aldous Huxley"],"first_publish_year":1932,"isbn":["0060929871","9780060929879"],"publisher":["Harper"],"cover_i":42,"subject":["Fiction"]}]}"#.utf8)
+        let first = try XCTUnwrap(MetadataLookup.parseOpenLibrary(openLibrary)?.first)
+        XCTAssertEqual(first.title, "Brave New World")
+        XCTAssertEqual(first.authors, ["Aldous Huxley"])
+        XCTAssertEqual(first.isbn, "9780060929879")
+        XCTAssertEqual(first.coverURL?.absoluteString, "https://covers.openlibrary.org/b/id/42-L.jpg")
+
+        let google = Data(#"{"items":[{"id":"abc","volumeInfo":{"title":"1984","authors":["George Orwell"],"publishedDate":"1949","description":"<p>A novel.</p>","industryIdentifiers":[{"type":"ISBN_13","identifier":"9780452284234"}],"imageLinks":{"thumbnail":"http://books.google.com/x?id=abc&edge=curl"}}}]}"#.utf8)
+        let second = try XCTUnwrap(MetadataLookup.parseGoogleBooks(google)?.first)
+        XCTAssertEqual(second.summary, "A novel.")
+        XCTAssertEqual(second.isbn, "9780452284234")
+        XCTAssertEqual(second.coverURL?.absoluteString, "https://books.google.com/x?id=abc")
+        XCTAssertEqual(MetadataLookup.parseGoogleBooks(Data(#"{"totalItems":0}"#.utf8))?.count, 0)
+        XCTAssertNil(MetadataLookup.parseGoogleBooks(Data(#"{"error":{"code":429}}"#.utf8))?.first)
+    }
+
+    /// Prints what the clean-up would do to a real library: `NIGHTSTAND_LIBRARY_INDEX=library.json swift test --filter RealCleanUp`
+    @MainActor
+    func testRealCleanUp() throws {
+        guard let index = ProcessInfo.processInfo.environment["NIGHTSTAND_LIBRARY_INDEX"] else {
+            throw XCTSkip("Set NIGHTSTAND_LIBRARY_INDEX to run this test.")
+        }
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: index), to: work.appending(path: "library.json"))
+        let store = LibraryStore(root: work, activity: ActivityCenter())
+        let proposals = MetadataCleaner.proposals(for: Set(store.books.map(\.id)), in: store.books)
+        print("CLEANUP: \(proposals.count) of \(store.books.count) books")
+        for proposal in proposals {
+            for change in proposal.changes { print("CLEANUP \(change.label): \(change.old)  →  \(change.new)") }
+        }
+    }
+
+    /// Imports a folder of books into a temporary library and prints what was read and what the clean-up
+    /// would change: `NIGHTSTAND_SURVEY=/path/to/folder swift test --filter FolderSurvey`
+    func testFolderSurvey() throws {
+        guard let path = ProcessInfo.processInfo.environment["NIGHTSTAND_SURVEY"] else {
+            throw XCTSkip("Set NIGHTSTAND_SURVEY to a folder of books to run this test.")
+        }
+        var books: [(file: String, book: Book)] = []
+        for file in Ingest.expand([URL(fileURLWithPath: path)]).sorted(by: { $0.path < $1.path }) {
+            do {
+                books.append((file.lastPathComponent, try Ingest.ingest(file: file, booksFolder: work.appending(path: "Books"))))
+            } catch {
+                print("SURVEY FAILED: \(file.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+        for (file, book) in books {
+            print("SURVEY \(book.format.label) | \(file) | \(book.title) | \(book.authorText) | \(book.seriesText) | cover \(book.hasCover)")
+        }
+        let library = books.map(\.book)
+        for proposal in MetadataCleaner.proposals(for: Set(library.map(\.id)), in: library) {
+            for change in proposal.changes { print("SURVEY-CLEAN \(change.label): \(change.old)  →  \(change.new)") }
+        }
+    }
+
+    /// Dry run against a real export and a copy of a library index:
+    /// `NIGHTSTAND_GOODREADS=export.csv NIGHTSTAND_LIBRARY_INDEX=library.json swift test --filter RealGoodreads`
+    @MainActor
+    func testRealGoodreadsExport() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let export = environment["NIGHTSTAND_GOODREADS"], let index = environment["NIGHTSTAND_LIBRARY_INDEX"] else {
+            throw XCTSkip("Set NIGHTSTAND_GOODREADS and NIGHTSTAND_LIBRARY_INDEX to run this test.")
+        }
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: index), to: work.appending(path: "library.json"))
+        let store = LibraryStore(root: work, activity: ActivityCenter())
+        let before = store.books
+        await store.importGoodreads(from: URL(fileURLWithPath: export))
+        print("SUMMARY: \(store.activity.current?.title ?? "") — \(store.activity.current?.detail ?? "")")
+        for (old, new) in zip(before, store.books) where old != new {
+            print("UPDATED: \(new.title) | \(new.rating)★ | \(new.status.label) | \(new.seriesText)")
+        }
+        for book in store.books where !zip(before, store.books).contains(where: { $0.1.id == book.id && $0.0 != $0.1 }) {
+            print("UNTOUCHED: \(book.title) — \(book.authorText)")
+        }
+    }
+
     /// Runs the whole pipeline over real books: `NIGHTSTAND_TEST_BOOKS=/path/to/folder swift test`.
     func testRealBooks() throws {
         guard let path = ProcessInfo.processInfo.environment["NIGHTSTAND_TEST_BOOKS"] else {

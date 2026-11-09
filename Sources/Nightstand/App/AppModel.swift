@@ -11,6 +11,12 @@ enum SidebarItem: Hashable {
     case device(String)
 }
 
+/// The proposals being reviewed in the clean-up sheet.
+struct CleanUpSession: Identifiable {
+    let id = UUID()
+    let proposals: [MetadataCleaner.Proposal]
+}
+
 enum ViewMode: String {
     case grid, list
 }
@@ -44,6 +50,8 @@ final class AppModel {
     var selection: Set<UUID> = []
     var search = ""
     var editing: Book?
+    var lookingUp: Book?
+    var cleanUp: CleanUpSession?
     var pendingDelete: Set<UUID> = []
     var showDeleteConfirmation = false
     var showInspector = UserDefaults.standard.object(forKey: "showInspector") as? Bool ?? true {
@@ -137,6 +145,26 @@ final class AppModel {
         if FileManager.default.fileExists(atPath: usual.path) { panel.directoryURL = usual }
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { await store.importCalibre(from: url) }
+    }
+
+    func importGoodreads() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.commaSeparatedText]
+        panel.message = "Choose your Goodreads export. On goodreads.com: My Books → Tools → Import and export → Export Library."
+        panel.prompt = "Import"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await store.importGoodreads(from: url) }
+    }
+
+    /// Proposes tidier details for the selected books, or for the whole library when fewer than two are selected.
+    func startCleanUp() {
+        let targets = selection.count > 1 ? selection : Set(store.books.map(\.id))
+        let proposals = MetadataCleaner.proposals(for: targets, in: store.books)
+        if proposals.isEmpty {
+            activity.flash("Nothing to clean up", detail: "Titles, authors and series already look consistent.")
+        } else {
+            cleanUp = CleanUpSession(proposals: proposals)
+        }
     }
 
     func open(_ book: Book) {

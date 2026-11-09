@@ -39,10 +39,23 @@ struct NightstandApp: App {
                     .keyboardShortcut("o")
                 Button("Import from Calibre…") { app.importCalibre() }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
+                Button("Import Ratings from Goodreads…") { app.importGoodreads() }
                 Divider()
                 Button("Export Selected…") { app.export(app.selection) }
                     .keyboardShortcut("e")
                     .disabled(app.selection.isEmpty)
+            }
+            CommandMenu("Library") {
+                Button(app.selection.count > 1 ? "Clean Up Selected Books…" : "Clean Up Details…") {
+                    app.startCleanUp()
+                }
+                .keyboardShortcut("k", modifiers: [.command, .shift])
+                .disabled(app.store.books.isEmpty)
+                Button("Look Up Details Online…") {
+                    if let id = app.selection.first { app.lookingUp = app.store.book(id) }
+                }
+                .keyboardShortcut("l")
+                .disabled(app.selection.count != 1)
             }
             CommandGroup(after: .sidebar) {
                 Button(app.showInspector ? "Hide Details" : "Show Details") {

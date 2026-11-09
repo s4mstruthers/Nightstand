@@ -190,6 +190,11 @@ private struct LibrarySettings: View {
             } footer: {
                 caption("Copies your books, covers, series, tags and ratings. Your Calibre library is not changed.")
             }
+            Section {
+                Button("Import Ratings from Goodreads…") { app.importGoodreads() }
+            } footer: {
+                caption("Matches your Goodreads export to books already in your library and fills in ratings, read status, dates read, reviews and shelves. Nothing you have already set in Nightstand is overwritten.")
+            }
         }
         .formStyle(.grouped)
     }

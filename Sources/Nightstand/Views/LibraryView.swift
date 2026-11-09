@@ -224,6 +224,7 @@ struct BookMenu: View {
         Divider()
         if let single {
             Button("Edit Details…", systemImage: "pencil") { app.editing = single }
+            Button("Look Up Details Online…", systemImage: "globe") { app.lookingUp = single }
             Button("Change Cover…", systemImage: "photo") { app.chooseCover(for: single.id) }
         }
         Button("Show in Finder", systemImage: "folder") { app.reveal(ids) }
