@@ -1,0 +1,20 @@
+# Builds a universal DMG and attaches it to a GitHub release whenever a version tag (v1.2.3) is pushed.
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  dmg:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        run: swift test
+      - name: Build DMG
+        run: VERSION="${GITHUB_REF_NAME#v}" scripts/build-app.sh --universal --dmg
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.dmg --title "Nightstand ${GITHUB_REF_NAME#v}" --generate-notes
