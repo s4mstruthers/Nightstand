@@ -425,6 +425,152 @@ final class PipelineTests: XCTestCase {
 
     /// Imports a folder of books into a temporary library and prints what was read and what the clean-up
     /// would change: `NIGHTSTAND_SURVEY=/path/to/folder swift test --filter FolderSurvey`
+    // MARK: Updates
+
+    func testUpdateFeed() throws {
+        let json = """
+        {"tag_name": "v0.10.0", "html_url": "https://github.com/s4mstruthers/Nightstand/releases/tag/v0.10.0",
+         "body": "## New\\n- **Bold** thing\\n\\n**Full Changelog**: https://example.com",
+         "assets": [
+           {"browser_download_url": "https://evil.example.com/Nightstand-0.10.0.dmg"},
+           {"browser_download_url": "https://github.com/s4mstruthers/Nightstand/releases/download/v0.10.0/notes.txt"},
+           {"browser_download_url": "https://github.com/s4mstruthers/Nightstand/releases/download/v0.10.0/Nightstand-0.10.0.dmg"}]}
+        """
+        let release = try UpdateFeed.parse(Data(json.utf8))
+        XCTAssertEqual(release.version, "0.10.0")
+        XCTAssertEqual(release.download?.host, "github.com")
+        XCTAssertEqual(release.download?.lastPathComponent, "Nightstand-0.10.0.dmg")
+        XCTAssertEqual(String(UpdateFeed.formatted(release.notes).characters), "New\n•  Bold thing")
+
+        XCTAssertTrue(UpdateFeed.isNewer("0.10.0", than: "0.9.2"))
+        XCTAssertTrue(UpdateFeed.isNewer("v1.0.1", than: "1.0"))
+        XCTAssertFalse(UpdateFeed.isNewer("1.0", than: "1.0.0"))
+        XCTAssertFalse(UpdateFeed.isNewer("0.1.1", than: "0.2.0"))
+        XCTAssertThrowsError(try UpdateFeed.parse(Data("{}".utf8)))
+    }
+
+    /// A signed stand-in for the app, so the installer can be tested without the real one.
+    private func makeApp(version: String, bundleID: String = "test.nightstand", in folder: URL) throws -> URL {
+        let app = folder.appending(path: "Nightstand.app")
+        try FileManager.default.createDirectory(at: app.appending(path: "Contents/MacOS"),
+                                                withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/bin/true"),
+                                         to: app.appending(path: "Contents/MacOS/Nightstand"))
+        let info: NSDictionary = ["CFBundleIdentifier": bundleID, "CFBundleExecutable": "Nightstand",
+                                  "CFBundleShortVersionString": version, "CFBundlePackageType": "APPL"]
+        try info.write(to: app.appending(path: "Contents/Info.plist"))
+        try Shell.run("/usr/bin/codesign", ["--force", "--sign", "-", app.path])
+        return app
+    }
+
+    private func makeImage(of folder: URL, named name: String) throws -> URL {
+        let image = work.appending(path: name)
+        try Shell.run("/usr/bin/hdiutil", ["create", "-volname", "Nightstand", "-srcfolder", folder.path,
+                                           "-format", "UDZO", "-quiet", image.path])
+        return image
+    }
+
+    private func version(of app: URL) -> String? {
+        NSDictionary(contentsOf: app.appending(path: "Contents/Info.plist"))?["CFBundleShortVersionString"] as? String
+    }
+
+    func testUpdateReplacesInstalledApp() throws {
+        let fm = FileManager.default
+        let installedFolder = work.appending(path: "Applications"), newFolder = work.appending(path: "new")
+        let installed = try makeApp(version: "1.0.0", in: installedFolder)
+        let image = try makeImage(of: try makeApp(version: "1.1.0", in: newFolder).deletingLastPathComponent(),
+                                  named: "update.dmg")
+        XCTAssertTrue(UpdateInstaller.canReplace(installed))
+        XCTAssertFalse(UpdateInstaller.canReplace(URL(fileURLWithPath: "/Volumes/Nightstand/Nightstand.app")))
+
+        // The wrong version, a different app and a tampered app all leave the installed copy alone.
+        XCTAssertThrowsError(try UpdateInstaller.install(image: image, version: "1.2.0", bundleID: "test.nightstand",
+                                                         over: installed))
+        XCTAssertThrowsError(try UpdateInstaller.install(image: image, version: "1.1.0", bundleID: "other.app",
+                                                         over: installed))
+        let tamperedFolder = work.appending(path: "tampered")
+        let tampered = try makeApp(version: "1.1.0", in: tamperedFolder)
+        try Data("changed after signing".utf8).write(to: tampered.appending(path: "Contents/MacOS/Nightstand"))
+        let tamperedImage = try makeImage(of: tamperedFolder, named: "tampered.dmg")
+        XCTAssertThrowsError(try UpdateInstaller.install(image: tamperedImage, version: "1.1.0",
+                                                         bundleID: "test.nightstand", over: installed))
+        XCTAssertEqual(version(of: installed), "1.0.0")
+
+        try UpdateInstaller.install(image: image, version: "1.1.0", bundleID: "test.nightstand", over: installed)
+        XCTAssertEqual(version(of: installed), "1.1.0")
+        XCTAssertNoThrow(try Shell.run("/usr/bin/codesign", ["--verify", "--strict", installed.path]))
+        XCTAssertEqual(try fm.contentsOfDirectory(atPath: installedFolder.path), ["Nightstand.app"])
+    }
+
+    /// Downloads the real latest release and installs it over a stand-in for an older copy.
+    func testLiveUpdate() async throws {
+        guard ProcessInfo.processInfo.environment["NIGHTSTAND_LIVE_UPDATE"] != nil else {
+            throw XCTSkip("Set NIGHTSTAND_LIVE_UPDATE to download the latest release")
+        }
+        let release = try await UpdateFeed.fetchLatest()
+        let url = try XCTUnwrap(release.download)
+        let bundleID = "io.github.s4mstruthers.Nightstand"
+        let installed = try makeApp(version: "0.0.1", bundleID: bundleID, in: work.appending(path: "Applications"))
+        let (file, _) = try await URLSession.shared.download(from: url)
+        let image = work.appending(path: "live.dmg")
+        try FileManager.default.moveItem(at: file, to: image)
+        try UpdateInstaller.install(image: image, version: release.version, bundleID: bundleID, over: installed)
+        XCTAssertEqual(version(of: installed), release.version)
+        print("Installed \(release.version) from \(url.absoluteString)")
+    }
+
+    // MARK: Connecting assistants
+
+    func testConnectingClaudeDesktopKeepsOtherSettings() throws {
+        let config = work.appending(path: "Claude/claude_desktop_config.json")
+        let exe = "/Applications/Nightstand.app/Contents/MacOS/Nightstand"
+        func root() throws -> [String: Any] {
+            try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: config)) as? [String: Any])
+        }
+
+        // No file yet: one is created.
+        XCTAssertEqual(AssistantConnector.status(in: config, executable: exe), .notConnected)
+        try AssistantConnector.setDesktop(connected: true, config: config, executable: exe)
+        XCTAssertEqual(AssistantConnector.status(in: config, executable: exe), .connected)
+
+        // An existing file keeps its other servers and settings.
+        try Data(#"{"theme": "dark", "mcpServers": {"other": {"command": "/bin/other"}}}"#.utf8).write(to: config)
+        try AssistantConnector.setDesktop(connected: true, config: config, executable: "/old/Nightstand")
+        XCTAssertEqual(AssistantConnector.status(in: config, executable: exe), .connectedElsewhere)
+        try AssistantConnector.setDesktop(connected: true, config: config, executable: exe)
+        XCTAssertEqual(AssistantConnector.status(in: config, executable: exe), .connected)
+        XCTAssertEqual(try root()["theme"] as? String, "dark")
+        var servers = try XCTUnwrap(try root()["mcpServers"] as? [String: Any])
+        XCTAssertEqual((servers["other"] as? [String: Any])?["command"] as? String, "/bin/other")
+        XCTAssertEqual((servers["nightstand"] as? [String: Any])?["args"] as? [String], ["--mcp"])
+
+        try AssistantConnector.setDesktop(connected: false, config: config, executable: exe)
+        servers = try XCTUnwrap(try root()["mcpServers"] as? [String: Any])
+        XCTAssertEqual(Array(servers.keys), ["other"])
+
+        // A file that can't be understood is never overwritten.
+        try Data("{ not json".utf8).write(to: config)
+        XCTAssertThrowsError(try AssistantConnector.setDesktop(connected: true, config: config, executable: exe))
+        XCTAssertEqual(try String(contentsOf: config, encoding: .utf8), "{ not json")
+    }
+
+    /// Runs the real Claude Code command against a throwaway settings folder.
+    func testConnectingClaudeCode() throws {
+        guard ProcessInfo.processInfo.environment["NIGHTSTAND_CLAUDE_CODE"] != nil,
+              let cli = AssistantConnector.codeCLI else {
+            throw XCTSkip("Set NIGHTSTAND_CLAUDE_CODE to run the installed claude command")
+        }
+        let exe = "/Applications/Nightstand.app/Contents/MacOS/Nightstand"
+        let environment = ["CLAUDE_CONFIG_DIR": work.path]
+        let config = work.appending(path: ".claude.json")
+        try AssistantConnector.setCode(connected: true, cli: cli, executable: "/old/Nightstand", environment: environment)
+        XCTAssertEqual(AssistantConnector.status(in: config, executable: exe), .connectedElsewhere)
+        try AssistantConnector.setCode(connected: true, cli: cli, executable: exe, environment: environment)
+        XCTAssertEqual(AssistantConnector.status(in: config, executable: exe), .connected)
+        try AssistantConnector.setCode(connected: false, cli: cli, executable: exe, environment: environment)
+        XCTAssertEqual(AssistantConnector.status(in: config, executable: exe), .notConnected)
+    }
+
     func testFolderSurvey() throws {
         guard let path = ProcessInfo.processInfo.environment["NIGHTSTAND_SURVEY"] else {
             throw XCTSkip("Set NIGHTSTAND_SURVEY to a folder of books to run this test.")

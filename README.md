@@ -33,6 +33,12 @@ Requires macOS 14 or later.
 Release builds are not notarised by Apple yet, so the first time you open the app macOS will block it:
 open **System Settings → Privacy & Security** and click **Open Anyway**.
 
+After that, Nightstand keeps itself up to date: it looks for a new release on GitHub once a day, shows you what
+changed, and installs it when you click **Install and Relaunch**. You can also choose **Nightstand → Check for
+Updates…**, or turn the daily check off in Settings → General. Updates are downloaded only from this
+repository's releases and are checked for the right app, version and an intact signature before they replace
+the installed copy.
+
 ## How it works
 
 Your library is a plain folder, `~/Nightstand Library`. Each book has its own folder holding the original
@@ -61,7 +67,10 @@ Nightstand includes a [Model Context Protocol](https://modelcontextprotocol.io) 
 look through your library to recommend what to read next, or organise it for you ("put all the Tao Wong books
 in their series", "tag everything I've finished this year").
 
-Settings → AI Assistants has the configuration ready to copy. For Claude Desktop and similar apps:
+In **Settings → AI Assistants**, click **Connect** next to Claude Desktop or Claude Code and Nightstand sets
+itself up there (quit and reopen Claude Desktop afterwards). **Disconnect** removes it again.
+
+For other assistants, or to set it up by hand, add this to the MCP configuration:
 
 ```json
 {
@@ -74,7 +83,7 @@ Settings → AI Assistants has the configuration ready to copy. For Claude Deskt
 }
 ```
 
-For Claude Code:
+Or for Claude Code:
 
 ```bash
 claude mcp add nightstand -- /Applications/Nightstand.app/Contents/MacOS/Nightstand --mcp

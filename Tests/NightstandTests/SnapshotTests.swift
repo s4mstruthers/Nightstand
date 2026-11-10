@@ -26,6 +26,18 @@ final class SnapshotTests: XCTestCase {
         try XCTUnwrap(rep.representation(using: .png, properties: [:])).write(to: url)
     }
 
+    func testUpdateSnapshot() async throws {
+        guard let output = ProcessInfo.processInfo.environment["NIGHTSTAND_SNAPSHOTS"] else {
+            throw XCTSkip("Set NIGHTSTAND_SNAPSHOTS to an output folder to render snapshots.")
+        }
+        let folder = URL(fileURLWithPath: output)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let app = AppModel()
+        app.updater.offer(try await UpdateFeed.fetchLatest())
+        try render(UpdateSheet().environment(app), size: NSSize(width: 500, height: 420),
+                   to: folder.appending(path: "update.png"))
+    }
+
     func testSnapshots() async throws {
         guard let output = ProcessInfo.processInfo.environment["NIGHTSTAND_SNAPSHOTS"] else {
             throw XCTSkip("Set NIGHTSTAND_SNAPSHOTS to an output folder to render snapshots.")

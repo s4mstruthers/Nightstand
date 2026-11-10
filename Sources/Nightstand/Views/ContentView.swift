@@ -6,6 +6,7 @@ struct ContentView: View {
 
     var body: some View {
         @Bindable var app = app
+        @Bindable var updater = app.updater
 
         NavigationSplitView {
             SidebarView()
@@ -51,6 +52,10 @@ struct ContentView: View {
         .sheet(item: $app.cleanUp) { session in
             CleanUpSheet(proposals: session.proposals)
         }
+        .sheet(isPresented: $updater.showSheet) {
+            UpdateSheet()
+        }
+        .task { app.updater.checkOnLaunch() }
         .confirmationDialog(deleteTitle, isPresented: $app.showDeleteConfirmation) {
             Button("Move to Trash", role: .destructive) { app.confirmDelete() }
             Button("Cancel", role: .cancel) {}

@@ -8,7 +8,7 @@ struct SettingsView: View {
             DeviceSettings()
                 .tabItem { Label("Devices", systemImage: "ipad.landscape") }
             LibrarySettings()
-                .tabItem { Label("Library", systemImage: "books.vertical") }
+                .tabItem { Label("General", systemImage: "gearshape") }
             AssistantSettings()
                 .tabItem { Label("AI Assistants", systemImage: "sparkles") }
         }
@@ -173,7 +173,20 @@ private struct LibrarySettings: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
+        @Bindable var updater = app.updater
+
         Form {
+            Section {
+                Toggle("Check for updates automatically", isOn: $updater.automatic)
+                LabeledContent("Version \(updater.currentVersion)") {
+                    Button("Check Now") { Task { await updater.check(userInitiated: true) } }
+                        .disabled(updater.isBusy)
+                }
+            } header: {
+                Text("Updates")
+            } footer: {
+                caption("Nightstand looks for a new version on GitHub once a day and asks before installing it.")
+            }
             Section {
                 LabeledContent("Location") {
                     Text(app.store.root.path(percentEncoded: false))
@@ -204,8 +217,13 @@ private struct LibrarySettings: View {
 
 private struct AssistantSettings: View {
     @State private var copied: String?
+    @State private var desktop = AssistantConnector.Status.notConnected
+    @State private var code = AssistantConnector.Status.notConnected
+    @State private var working: String?
+    @State private var problem: String?
+    @State private var showManual = false
 
-    private var executable: String { Bundle.main.executablePath ?? "/Applications/Nightstand.app/Contents/MacOS/Nightstand" }
+    private var executable: String { AssistantConnector.executable }
 
     private var configuration: String {
         """
@@ -230,28 +248,95 @@ private struct AssistantSettings: View {
             } footer: {
                 caption("The assistant can read your books' details, ratings and notes, and edit details. It cannot delete books or open the book files. Before the first edit each day, your library index is copied to the Backups folder in your library.")
             }
-            snippet("Claude Desktop and other apps", text: configuration,
-                    footer: "Add this to the app's MCP configuration. In Claude Desktop: Settings → Developer → Edit Config.")
-            snippet("Claude Code", text: claudeCodeCommand, footer: "Run this once in a terminal.")
+
+            Section {
+                assistant("Claude Desktop", status: desktop, connectedNote: "Quit and reopen Claude to finish.") { connect in
+                    try AssistantConnector.setDesktop(connected: connect)
+                }
+                assistant("Claude Code", status: code, connectedNote: "Available in new sessions.") { connect in
+                    try AssistantConnector.setCode(connected: connect)
+                }
+            } header: {
+                Text("Connect")
+            } footer: {
+                if let problem { caption(problem) }
+            }
+
+            Section {
+                DisclosureGroup("Set up another assistant by hand", isExpanded: $showManual) {
+                    snippet("MCP configuration", text: configuration,
+                            footer: "Add this to the assistant's MCP configuration.")
+                    snippet("Claude Code command", text: claudeCodeCommand, footer: "Run this once in a terminal.")
+                }
+            }
         }
         .formStyle(.grouped)
+        .onAppear(perform: refresh)
+        .animation(.snappy, value: desktop)
+        .animation(.snappy, value: code)
+    }
+
+    private func refresh() {
+        desktop = AssistantConnector.desktopStatus()
+        code = AssistantConnector.codeStatus()
+    }
+
+    private func assistant(_ name: String, status: AssistantConnector.Status, connectedNote: String,
+                           change: @escaping @Sendable (Bool) throws -> Void) -> some View {
+        LabeledContent {
+            if working == name {
+                ProgressView().controlSize(.small)
+            } else {
+                switch status {
+                case .notInstalled: EmptyView()
+                case .notConnected: Button("Connect") { apply(name, true, change) }
+                case .connectedElsewhere: Button("Reconnect") { apply(name, true, change) }
+                case .connected: Button("Disconnect") { apply(name, false, change) }
+                }
+            }
+        } label: {
+            Text(name)
+            switch status {
+            case .notInstalled: Text("Not installed on this Mac")
+            case .notConnected: Text("Not connected")
+            case .connectedElsewhere: Text("Connected to a copy of Nightstand that has moved")
+            case .connected: Label("Connected. \(connectedNote)", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+            }
+        }
+        .disabled(working != nil)
+    }
+
+    private func apply(_ name: String, _ connect: Bool, _ change: @escaping @Sendable (Bool) throws -> Void) {
+        working = name
+        problem = nil
+        Task {
+            do {
+                try await Task.detached { try change(connect) }.value
+            } catch {
+                problem = "\(name): \(error.localizedDescription)"
+            }
+            working = nil
+            refresh()
+        }
     }
 
     private func snippet(_ title: String, text: String, footer: String) -> some View {
-        Section {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.callout.weight(.medium))
             Text(text)
                 .font(.system(.caption, design: .monospaced))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Button(copied == title ? "Copied" : "Copy") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(text, forType: .string)
-                copied = title
+            HStack {
+                Button(copied == title ? "Copied" : "Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                    copied = title
+                }
+                Text(footer).font(.caption).foregroundStyle(.secondary)
             }
-        } header: {
-            Text(title)
-        } footer: {
-            caption(footer)
         }
+        .padding(.vertical, 4)
     }
 }

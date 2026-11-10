@@ -45,6 +45,9 @@ struct NightstandApp: App {
         }
         .defaultSize(width: 1240, height: 800)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { Task { await app.updater.check(userInitiated: true) } }
+            }
             CommandGroup(replacing: .newItem) {
                 Button("Add Books…") { app.addBooks() }
                     .keyboardShortcut("o")

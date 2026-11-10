@@ -45,6 +45,7 @@ final class AppModel {
     let store: LibraryStore
     let devices: DeviceManager
     let settings = AppSettings()
+    let updater: Updater
 
     var sidebar: SidebarItem? = .all
     var selection: Set<UUID> = []
@@ -71,6 +72,7 @@ final class AppModel {
         self.activity = activity
         store = LibraryStore(activity: activity)
         devices = DeviceManager(activity: activity)
+        updater = Updater(activity: activity)
     }
 
     // MARK: Derived
