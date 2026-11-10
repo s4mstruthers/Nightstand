@@ -35,6 +35,53 @@ enum DeviceKind: String, Sendable {
     }
 }
 
+/// How books are filed into folders on an e-reader.
+enum FolderLayout: String, CaseIterable, Identifiable, Sendable {
+    case author, authorSeries, series, flat
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .author: "By Author"
+        case .authorSeries: "By Author, Then Series"
+        case .series: "By Series, Else Author"
+        case .flat: "All in One Folder"
+        }
+    }
+
+    var example: String {
+        switch self {
+        case .author: "Tao Wong/Rebel Star - Tao Wong.kepub.epub"
+        case .authorSeries: "Tao Wong/The System Apocalypse/Rebel Star - Tao Wong.kepub.epub"
+        case .series: "The System Apocalypse/Rebel Star - Tao Wong.kepub.epub"
+        case .flat: "Rebel Star - Tao Wong.kepub.epub"
+        }
+    }
+
+    static var current: FolderLayout {
+        get { FolderLayout(rawValue: UserDefaults.standard.string(forKey: "deviceFolderLayout") ?? "") ?? .author }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "deviceFolderLayout") }
+    }
+
+    /// The folder a book goes in, relative to the device's books folder.
+    func folder(for book: Book) -> String {
+        let author = BookBuilder.sanitize(book.authors.first ?? "Unknown Author")
+        let series = book.series.flatMap { $0.isEmpty ? nil : BookBuilder.sanitize($0) }
+        switch self {
+        case .author: return author
+        case .authorSeries: return [author, series].compactMap { $0 }.joined(separator: "/")
+        case .series: return series ?? author
+        case .flat: return ""
+        }
+    }
+
+    /// The full path for a book file named `fileName` on a device of this kind.
+    func path(for book: Book, fileName: String, on kind: DeviceKind) -> String {
+        [kind.booksFolder, folder(for: book), fileName].filter { !$0.isEmpty }.joined(separator: "/")
+    }
+}
+
 struct DeviceFile: Identifiable, Hashable, Sendable {
     var id: String { path }
     /// Path relative to the device root.
@@ -226,7 +273,8 @@ final class DeviceManager {
         var sent = 0
         var problems: [String] = []
         let profile = device.kind.profile
-        let booksFolder = device.kind.booksFolder
+        let kind = device.kind
+        let layout = FolderLayout.current
 
         for (index, book) in books.enumerated() {
             activity.set("Sending to \(device.name)…", detail: book.title,
@@ -239,12 +287,17 @@ final class DeviceManager {
                     let built = try BookBuilder.build(book: book, source: source, customCover: cover,
                                                       options: options, profile: profile)
                     defer { try? FileManager.default.removeItem(at: built.deletingLastPathComponent()) }
-                    let author = BookBuilder.sanitize(book.authors.first ?? "Unknown Author")
-                    let path = [booksFolder, author, built.lastPathComponent]
-                        .filter { !$0.isEmpty }.joined(separator: "/")
+                    let path = layout.path(for: book, fileName: built.lastPathComponent, on: kind)
                     let fm = FileManager.default
                     if let previous, previous != path {
-                        try? fm.removeItem(at: device.url.appending(path: previous))
+                        let old = device.url.appending(path: previous)
+                        try? fm.removeItem(at: old)
+                        // Don't leave the old folder behind empty.
+                        let folder = old.deletingLastPathComponent()
+                        if folder.path != device.url.path,
+                           ((try? fm.contentsOfDirectory(atPath: folder.path)) ?? ["?"]).allSatisfy({ $0.hasPrefix(".") }) {
+                            try? fm.removeItem(at: folder)
+                        }
                     }
                     let destination = device.url.appending(path: path)
                     try fm.createDirectory(at: destination.deletingLastPathComponent(),

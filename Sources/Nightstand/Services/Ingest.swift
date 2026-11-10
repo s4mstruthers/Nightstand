@@ -43,7 +43,7 @@ enum Ingest {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         do {
             let stored = folder.appending(path: book.fileName)
-            try FileManager.default.copyItem(at: file, to: stored)
+            try FileManager.default.copyContents(of: file, to: stored)
             book.fileSize = Int64((try? stored.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
 
             var embedded = EPUBMetadata()
@@ -208,5 +208,25 @@ enum CalibreLibrary {
                                 cover: fm.fileExists(atPath: cover.path) ? cover : nil))
         }
         return result
+    }
+}
+
+extension FileManager {
+    /// Copies a file, falling back to its contents alone when its extended attributes can't be copied. On the
+    /// FAT drives e-readers use, macOS keeps attributes in "._" files that are often broken.
+    func copyContents(of source: URL, to destination: URL) throws {
+        do {
+            try copyItem(at: source, to: destination)
+        } catch {
+            try? removeItem(at: destination)
+            guard createFile(atPath: destination.path, contents: nil) else { throw error }
+            let input = try FileHandle(forReadingFrom: source)
+            defer { try? input.close() }
+            let output = try FileHandle(forWritingTo: destination)
+            defer { try? output.close() }
+            while let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty {
+                try output.write(contentsOf: chunk)
+            }
+        }
     }
 }

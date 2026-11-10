@@ -294,6 +294,38 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(KoboReading.merge(records, into: [dune], manifest: [:]).changed.first?.status, .abandoned)
     }
 
+    func testKoboPositionMovesToSameSentence() throws {
+        func epub(_ name: String, _ chapters: [String: String]) throws -> URL {
+            let folder = work.appending(path: name)
+            for (path, body) in chapters {
+                let url = folder.appending(path: path)
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try "<html><body>\(body)</body></html>".write(to: url, atomically: true, encoding: .utf8)
+            }
+            let archive = work.appending(path: "\(name).epub")
+            _ = try Shell.run("/usr/bin/zip", ["-rq", archive.path, "."], cwd: folder)
+            return archive
+        }
+        func span(_ id: String, _ text: String) -> String { #"<span class="koboSpan" id="kobo.\#(id)">\#(text)</span>"# }
+
+        // Calibre numbered differently, and put an empty span next to a picture.
+        let old = try epub("old", ["text/ch1.html": span("1.1", "Intro.") + span("5.1", "Here we go.") + span("5.2", "")
+                                   + span("6.1", "After the picture.")])
+        let new = try epub("new", ["text/ch1.html": span("1.1", "Intro.") + span("3.1", "Here we go.")
+                                   + span("4.1", "After the picture.")])
+        XCTAssertEqual(KoboTidy.relocate("text/ch1.html#kobo.6.1", from: old, to: new, chapterProgress: 0.9),
+                       "text/ch1.html#kobo.4.1")
+        XCTAssertEqual(KoboTidy.relocate("text/ch1.html#kobo.5.2", from: old, to: new, chapterProgress: 0.5),
+                       "text/ch1.html#kobo.3.1")
+        // A chapter split differently is found by searching the whole book.
+        let split = try epub("split", ["text/part2.html": span("9.1", "Intro."), "text/part3.html": span("2.2", "After the picture.")])
+        XCTAssertEqual(KoboTidy.relocate("text/ch1.html#kobo.6.1", from: old, to: split, chapterProgress: nil),
+                       "text/part3.html#kobo.2.2")
+        // Without a matching sentence, the same share of the chapter.
+        XCTAssertEqual(KoboTidy.relocate("text/ch1.html#kobo.9.9", from: old, to: new, chapterProgress: 0.5),
+                       "text/ch1.html#kobo.3.1")
+    }
+
     func testBatchEditChangesOnlyChosenFields() {
         func book(_ title: String, series: String? = nil, index: Double? = nil, tags: [String] = []) -> Book {
             var book = Book(title: title, format: .epub)

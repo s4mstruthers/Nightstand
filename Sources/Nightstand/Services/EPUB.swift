@@ -248,6 +248,8 @@ final class ExtractedEPUB {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         do {
             try Shell.run("/usr/bin/unzip", ["-q", "-o", archive.path, "-d", root.path], okCodes: [0, 1])
+            // Some EPUBs store files with no permissions at all, which zip then can't read back.
+            try Shell.run("/bin/chmod", ["-R", "u+rwX", root.path])
             let container = try XMLDocument(contentsOf: root.appending(path: "META-INF/container.xml"),
                                             options: [.nodeLoadExternalEntitiesNever])
             guard let path = container.rootElement()?.child("rootfiles")?.child("rootfile")?.attr("full-path")

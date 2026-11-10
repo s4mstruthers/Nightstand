@@ -142,6 +142,14 @@ private struct DeviceSettings: View {
             }
 
             Section {
+                Picker("Folders on the e-reader", selection: Binding { FolderLayout.current } set: { FolderLayout.current = $0 }) {
+                    ForEach(FolderLayout.allCases) { Text($0.label).tag($0) }
+                }
+            } footer: {
+                caption("How books are filed when Nightstand sends them. To move books already on a Kobo, use Tidy Up on its page.")
+            }
+
+            Section {
                 @Bindable var app = app
                 Toggle("Sync reading from Kobo when connected", isOn: $app.syncKoboAutomatically)
             } footer: {

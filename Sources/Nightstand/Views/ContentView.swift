@@ -49,6 +49,9 @@ struct ContentView: View {
         .sheet(item: $app.batchEditing) { session in
             BatchEditor(bookIDs: session.bookIDs, books: session.bookIDs.compactMap(app.store.book))
         }
+        .sheet(item: $app.tidyingUp) { session in
+            KoboTidySheet(session: session)
+        }
         .sheet(item: $app.lookingUp) { book in
             LookupSheet(book: book)
         }

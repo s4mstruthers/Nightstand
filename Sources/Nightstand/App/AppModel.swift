@@ -75,8 +75,11 @@ final class AppModel {
         devices = DeviceManager(activity: activity)
         updater = Updater(activity: activity)
         devices.onConnect = { [weak self] device in
-            guard let self, device.kind == .kobo, self.syncKoboAutomatically else { return }
-            self.syncReading(from: device.id, automatic: true)
+            guard let self, device.kind == .kobo else { return }
+            Task {
+                await self.restorePositions(on: device.id, automatic: true)
+                if self.syncKoboAutomatically { self.syncReading(from: device.id, automatic: true) }
+            }
         }
     }
 
@@ -85,6 +88,11 @@ final class AppModel {
         didSet { UserDefaults.standard.set(syncKoboAutomatically, forKey: "syncKoboReading") }
     }
     private(set) var syncingDevice: String?
+    /// Books replaced on each Kobo whose reading positions are still to be written back, by device id.
+    private(set) var pendingRestores: [String: Int] = [:]
+    var tidyingUp: KoboTidySession?
+
+    var koboBackupFolder: URL { store.root.appending(path: "Kobo Backups") }
 
     // MARK: Derived
 
@@ -220,6 +228,163 @@ final class AppModel {
             } catch {
                 activity.flash("Couldn't sync reading from \(device.name)", detail: error.localizedDescription)
             }
+        }
+    }
+
+    // MARK: Tidying a Kobo
+
+    func startTidyUp(_ deviceID: String) {
+        guard let device = devices.device(deviceID), device.kind == .kobo else { return }
+        tidyingUp = KoboTidySession(deviceID: deviceID, deviceName: device.name)
+    }
+
+    func planTidyUp(_ deviceID: String) async -> KoboTidy.Plan? {
+        guard let device = devices.device(deviceID) else { return nil }
+        let root = device.url, books = store.books
+        return await Task.detached { KoboTidy.plan(deviceRoot: root, books: books) }.value
+    }
+
+    /// Replaces other apps' copies with Nightstand's, removes leftovers, and saves each reading position to be
+    /// written back once the Kobo has imported the new copies.
+    func tidyUp(_ deviceID: String, options: KoboTidy.Options = .saved) async {
+        guard let device = devices.device(deviceID), device.kind == .kobo, syncingDevice == nil else { return }
+        syncingDevice = deviceID
+        defer { syncingDevice = nil }
+        let root = device.url
+        let backups = koboBackupFolder
+        let fm = FileManager.default
+
+        do {
+            // 1. Keep what the Kobo knows, and a copy of its database, before changing anything.
+            activity.set("Saving reading progress from \(device.name)…")
+            let records = try await Task.detached { try KoboReading.read(deviceRoot: root) }.value
+            let synced = KoboReading.merge(records, into: store.books, manifest: device.manifest)
+            for book in synced.changed { store.update(book) }
+            try await Task.detached { try KoboTidy.backUpDatabase(on: root, to: backups) }.value
+
+            // 2. Books not in the library yet are added to it first.
+            var plan = await planTidyUp(deviceID) ?? KoboTidy.Plan()
+            if options.addMissing, !plan.imports.isEmpty {
+                await store.importFiles(plan.imports.map { root.appending(path: $0) })
+                plan = await planTidyUp(deviceID) ?? plan
+            }
+            plan.replacements = plan.replacements.filter(options.includes)
+            if !options.removeDamaged { plan.damaged = [] }
+            let removeLeftovers = options.removeLeftovers, keepPlace = options.keepPlace
+
+            // 3. Keep the old copies of books that were opened, to find the reading position in them.
+            let scratch = fm.temporaryDirectory.appending(path: "nightstand-tidy-\(UUID().uuidString)")
+            try fm.createDirectory(at: scratch, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: scratch) }
+            var oldCopies: [UUID: URL] = [:]
+            // Places saved by an earlier tidy-up that the Kobo hasn't picked up yet move with their books.
+            let earlier = KoboTidy.pending(on: root)
+            for replacement in plan.replacements
+            where keepPlace && (replacement.hasPosition || earlier[replacement.oldPath] != nil) {
+                let copy = scratch.appending(path: "\(replacement.bookID.uuidString).epub")
+                try? fm.copyContents(of: root.appending(path: replacement.oldPath), to: copy)
+                oldCopies[replacement.bookID] = copy
+            }
+
+            // 4. Send Nightstand's copies.
+            let books = plan.replacements.compactMap { store.book($0.bookID) }
+            await devices.send(books, to: deviceID, store: store, options: settings.format)
+
+            // 5. Save positions, then remove the old copies and leftovers.
+            let manifest = DeviceScanner.readManifest(on: root)
+            var pending = KoboTidy.pending(on: root)
+            var replaced = 0
+            let result: (Int, [String: KoboTidy.Position]) = await Task.detached {
+                var pending = pending
+                var replaced = 0
+                var folders: Set<String> = []
+                for replacement in plan.replacements {
+                    // A book that failed to send keeps its old copy.
+                    guard let newPath = manifest[replacement.bookID] else { continue }
+                    replaced += 1
+                    let carried = pending.removeValue(forKey: replacement.oldPath)
+                    if keepPlace, let record = replacement.record, replacement.hasPosition {
+                        let bookmark = record.bookmark.flatMap { bookmark in
+                            oldCopies[replacement.bookID].flatMap {
+                                KoboTidy.relocate(bookmark, from: $0, to: root.appending(path: newPath),
+                                                  chapterProgress: record.chapterProgress)
+                            }
+                        }
+                        pending[newPath] = KoboTidy.Position(
+                            title: replacement.title, readStatus: record.readStatus,
+                            percentRead: record.percentRead, lastRead: record.lastReadRaw,
+                            secondsReading: record.secondsReading, chapterProgress: record.chapterProgress,
+                            bookmark: bookmark)
+                    } else if keepPlace, var carried {
+                        carried.bookmark = carried.bookmark.flatMap { bookmark in
+                            oldCopies[replacement.bookID].flatMap {
+                                KoboTidy.relocate(bookmark, from: $0, to: root.appending(path: newPath),
+                                                  chapterProgress: carried.chapterProgress)
+                            }
+                        }
+                        pending[newPath] = carried
+                    }
+                    if replacement.oldPath.lowercased() != newPath.lowercased() {
+                        try? fm.removeItem(at: root.appending(path: replacement.oldPath))
+                        folders.insert((replacement.oldPath as NSString).deletingLastPathComponent)
+                    }
+                }
+                for path in plan.damaged {
+                    try? fm.removeItem(at: root.appending(path: path))
+                    folders.insert((path as NSString).deletingLastPathComponent)
+                }
+                // Remove folders the old copies leave empty, and their parents if those empty too.
+                for start in folders {
+                    var folder = start
+                    while !folder.isEmpty {
+                        let url = root.appending(path: folder)
+                        let left = ((try? fm.contentsOfDirectory(atPath: url.path)) ?? ["?"]).filter { !$0.hasPrefix(".") }
+                        guard left.isEmpty else { break }
+                        try? fm.removeItem(at: url)
+                        folder = (folder as NSString).deletingLastPathComponent
+                    }
+                }
+                KoboTidy.savePending(pending, on: root)
+                // Last, so "._" files made by the writes above go too.
+                for junk in removeLeftovers ? KoboTidy.junkFiles(on: root) : [] {
+                    try? fm.removeItem(at: root.appending(path: junk))
+                }
+                return (replaced, pending)
+            }.value
+            replaced = result.0
+            pending = result.1
+            pendingRestores[deviceID] = pending.count
+            devices.refresh()
+            activity.flash("Tidied \(device.name): \(replaced) book\(replaced == 1 ? "" : "s") replaced",
+                           detail: pending.isEmpty ? nil
+                               : "Eject the Kobo and let it finish importing, then plug it back in to restore your places in \(pending.count) book\(pending.count == 1 ? "" : "s").")
+        } catch {
+            activity.flash("Couldn't tidy \(device.name)", detail: error.localizedDescription)
+        }
+    }
+
+    /// Writes saved reading positions onto books the Kobo has imported since they were replaced.
+    func restorePositions(on deviceID: String, automatic: Bool = false) async {
+        guard let device = devices.device(deviceID), device.kind == .kobo else { return }
+        let root = device.url, backups = koboBackupFolder
+        guard !KoboTidy.pending(on: root).isEmpty else {
+            pendingRestores[deviceID] = nil
+            return
+        }
+        do {
+            let (restored, waiting) = try await Task.detached {
+                try KoboTidy.restore(on: root, backupFolder: backups)
+            }.value
+            pendingRestores[deviceID] = waiting == 0 ? nil : waiting
+            if !restored.isEmpty {
+                activity.flash("Restored your place in \(restored.count) book\(restored.count == 1 ? "" : "s") on \(device.name)",
+                               detail: waiting > 0 ? "\(waiting) still waiting for the Kobo to import them" : nil)
+            } else if !automatic {
+                activity.flash("The Kobo hasn't imported the new copies yet",
+                               detail: "Eject it, wait for it to finish importing, then plug it back in.")
+            }
+        } catch {
+            activity.flash("Couldn't restore reading positions", detail: error.localizedDescription)
         }
     }
 

@@ -23,6 +23,19 @@ struct DeviceView: View {
             Section {
                 header(device)
                     .listRowSeparator(.hidden)
+                if let waiting = app.pendingRestores[device.id], waiting > 0 {
+                    HStack(spacing: 10) {
+                        Image(systemName: "bookmark.circle").font(.title2).foregroundStyle(.tint)
+                        Text("Your place in \(waiting) book\(waiting == 1 ? "" : "s") will be restored once the Kobo has imported them. Eject it, let it finish importing, then plug it back in.")
+                            .font(.callout)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                        Button("Restore Now") { Task { await app.restorePositions(on: device.id) } }
+                    }
+                    .padding(10)
+                    .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+                    .listRowSeparator(.hidden)
+                }
             }
 
             Section("From Your Library (\(tracked.count))") {
@@ -130,6 +143,10 @@ struct DeviceView: View {
                 .controlSize(.large)
                 .disabled(app.syncingDevice != nil)
                 .help("Read progress, reading time and highlights from \(device.name)")
+                Button("Tidy Up…", systemImage: "sparkles") { app.startTidyUp(device.id) }
+                    .controlSize(.large)
+                    .disabled(app.syncingDevice != nil)
+                    .help("Replace books put on the Kobo by Calibre or other apps with Nightstand's copies")
             }
             Button("Eject", systemImage: "eject") { app.devices.eject(device) }
                 .controlSize(.large)

@@ -16,6 +16,12 @@ enum KoboReading {
         var lastRead: Date?
         var secondsReading: Int?
         var highlights: [Highlight] = []
+        /// Where the reader is: a chapter file in the book and a `kobo.N.N` span, e.g. `text/ch3.html#kobo.24.1`.
+        var bookmark: String?
+        /// How far through the current chapter, 0 to 1.
+        var chapterProgress: Double?
+        /// `DateLastRead` exactly as the Kobo wrote it, for writing back.
+        var lastReadRaw: String?
 
         /// The book's path relative to the device root, for books copied onto it over USB.
         var devicePath: String? {
@@ -47,26 +53,27 @@ enum KoboReading {
         try fm.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: folder) }
         let copy = folder.appending(path: "KoboReader.sqlite")
-        try fm.copyItem(at: source, to: copy)
+        try fm.copyContents(of: source, to: copy)
         // Recent changes may still be in the write-ahead log.
         for suffix in ["-wal", "-shm"] {
             let extra = URL(fileURLWithPath: source.path + suffix)
             if fm.fileExists(atPath: extra.path) {
-                try? fm.copyItem(at: extra, to: URL(fileURLWithPath: copy.path + suffix))
+                try? fm.copyContents(of: extra, to: URL(fileURLWithPath: copy.path + suffix))
             }
         }
         return try read(database: copy)
     }
 
     static func read(database url: URL) throws -> [Record] {
-        let db = try Database(url)
+        let db = try KoboDatabase(url)
         let columns = try db.columns(of: "content")
         func column(_ name: String, or fallback: String) -> String { columns.contains(name) ? name : fallback }
 
         let sql = """
             SELECT ContentID, \(column("Title", or: "''")), \(column("Attribution", or: "''")),
                    \(column("ReadStatus", or: "0")), \(column("___PercentRead", or: "0")),
-                   \(column("DateLastRead", or: "NULL")), \(column("TimeSpentReading", or: "NULL"))
+                   \(column("DateLastRead", or: "NULL")), \(column("TimeSpentReading", or: "NULL")),
+                   \(column("ChapterIDBookmarked", or: "NULL")), \(column("CurrentChapterProgress", or: "NULL"))
             FROM content WHERE ContentType = 6
             """
         var records: [String: Record] = [:]
@@ -75,7 +82,9 @@ enum KoboReading {
             guard let id = row.text(0) else { return }
             records[id] = Record(contentID: id, title: row.text(1) ?? "", author: row.text(2) ?? "",
                                  readStatus: row.int(3) ?? 0, percentRead: min(max(row.int(4) ?? 0, 0), 100),
-                                 lastRead: row.text(5).flatMap(parseDate), secondsReading: row.int(6))
+                                 lastRead: row.text(5).flatMap(parseDate), secondsReading: row.int(6),
+                                 bookmark: row.text(7).flatMap { $0.isEmpty ? nil : $0 },
+                                 chapterProgress: row.double(8), lastReadRaw: row.text(5))
             order.append(id)
         }
 
@@ -174,6 +183,12 @@ enum KoboReading {
 
     private static func match(_ record: Record, books: [Book], byPath: [String: UUID]) -> UUID? {
         if let path = record.devicePath?.lowercased(), let id = byPath[path] { return id }
+        return match(title: record.title, author: record.author, in: books)
+    }
+
+    /// Finds the one library book with this title (with or without its subtitle) and author, if there is one.
+    static func match(title rawTitle: String, author rawAuthor: String, in books: [Book]) -> UUID? {
+        let record = (title: rawTitle, author: rawAuthor)
         let author = normalize(record.author + " " + record.title)
         func byAuthor(_ book: Book) -> Bool {
             guard let surname = book.authors.first?.split(separator: " ").last else { return true }
@@ -202,9 +217,10 @@ enum KoboReading {
     }
 }
 
-/// A minimal SQLite wrapper for reading. It is only ever given a private copy: a database in WAL mode (as
-/// Kobo's is) can't be opened read-only when its side files are missing, so the copy is opened read-write.
-private final class Database {
+/// A small SQLite wrapper. Reading is always done on a private copy (a WAL database like Kobo's can't be
+/// opened read-only when its side files are missing, so copies are opened read-write too). Writing to the
+/// device's own database is done only by `KoboTidy.restore`, after a backup.
+final class KoboDatabase {
     struct Row {
         let statement: OpaquePointer
         func text(_ index: Int32) -> String? {
@@ -219,6 +235,17 @@ private final class Database {
             default: text(index).flatMap { Int($0) ?? Double($0).map { Int($0) } }
             }
         }
+        func double(_ index: Int32) -> Double? {
+            switch sqlite3_column_type(statement, index) {
+            case SQLITE_NULL: nil
+            case SQLITE_INTEGER, SQLITE_FLOAT: sqlite3_column_double(statement, index)
+            default: text(index).flatMap(Double.init)
+            }
+        }
+    }
+
+    enum Value {
+        case text(String?), int(Int?), double(Double?)
     }
 
     private var handle: OpaquePointer?
@@ -229,22 +256,48 @@ private final class Database {
             sqlite3_close(handle)
             throw KoboReading.ReadError.unreadable(message)
         }
+        sqlite3_busy_timeout(handle, 3000)
     }
 
     deinit { sqlite3_close(handle) }
 
-    func query(_ sql: String, _ each: (Row) throws -> Void) throws {
+    private var error: KoboReading.ReadError { .unreadable(String(cString: sqlite3_errmsg(handle))) }
+
+    private func prepare(_ sql: String, _ values: [Value]) throws -> OpaquePointer {
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
-            throw KoboReading.ReadError.unreadable(String(cString: sqlite3_errmsg(handle)))
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK, let statement else { throw error }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        for (offset, value) in values.enumerated() {
+            let index = Int32(offset + 1)
+            switch value {
+            case .text(let text?): sqlite3_bind_text(statement, index, text, -1, transient)
+            case .int(let int?): sqlite3_bind_int64(statement, index, Int64(int))
+            case .double(let double?): sqlite3_bind_double(statement, index, double)
+            default: sqlite3_bind_null(statement, index)
+            }
         }
+        return statement
+    }
+
+    func query(_ sql: String, _ values: [Value] = [], _ each: (Row) throws -> Void) throws {
+        let statement = try prepare(sql, values)
         defer { sqlite3_finalize(statement) }
         while true {
             let step = sqlite3_step(statement)
             if step == SQLITE_DONE { break }
-            guard step == SQLITE_ROW else { throw KoboReading.ReadError.unreadable(String(cString: sqlite3_errmsg(handle))) }
+            guard step == SQLITE_ROW else { throw error }
             try each(Row(statement: statement))
         }
+    }
+
+    /// Runs a statement and returns how many rows it changed.
+    @discardableResult
+    func execute(_ sql: String, _ values: [Value] = []) throws -> Int {
+        let statement = try prepare(sql, values)
+        defer { sqlite3_finalize(statement) }
+        let step = sqlite3_step(statement)
+        guard step == SQLITE_DONE || step == SQLITE_ROW else { throw error }
+        return Int(sqlite3_changes(handle))
     }
 
     func columns(of table: String) throws -> Set<String> {
@@ -255,7 +308,7 @@ private final class Database {
 
     func tableExists(_ table: String) throws -> Bool {
         var found = false
-        try query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = '\(table)'") { _ in found = true }
+        try query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", [.text(table)]) { _ in found = true }
         return found
     }
 }
