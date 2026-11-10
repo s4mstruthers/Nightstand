@@ -69,6 +69,14 @@ struct Book: Identifiable, Codable, Hashable, Sendable {
     var dateAdded = Date()
     var dateStarted: Date?
     var dateFinished: Date?
+    /// How far through the book, 0 to 1, as last synced from an e-reader.
+    var progress: Double?
+    /// When the e-reader last opened the book.
+    var lastRead: Date?
+    /// Total time spent reading on the e-reader.
+    var readingSeconds: Int?
+    /// Highlights and notes made on the e-reader.
+    var highlights: [Highlight]?
 
     // File
     var format: BookFormat
@@ -95,6 +103,26 @@ struct Book: Identifiable, Codable, Hashable, Sendable {
 
     static func formatIndex(_ value: Double) -> String {
         value == value.rounded() ? String(Int(value)) : String(value)
+    }
+}
+
+/// A passage highlighted, or a note written, on an e-reader.
+struct Highlight: Identifiable, Codable, Hashable, Sendable {
+    /// The e-reader's own id for it, so syncing again updates rather than duplicates.
+    var id: String
+    var text: String?
+    var note: String?
+    var date: Date?
+}
+
+extension Book {
+    /// "3 h 20 min", or nil when nothing has been recorded.
+    var readingTimeText: String? {
+        guard let readingSeconds, readingSeconds >= 60 else { return nil }
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = readingSeconds >= 3600 ? [.hour, .minute] : [.minute]
+        formatter.unitsStyle = .short
+        return formatter.string(from: TimeInterval(readingSeconds))
     }
 }
 

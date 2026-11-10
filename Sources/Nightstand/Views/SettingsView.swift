@@ -141,6 +141,13 @@ private struct DeviceSettings: View {
                 caption("Kobo and Kindle readers are recognised when you plug them in. Kindles from 2024 onwards no longer appear as a drive on a Mac, so they can't be used over USB.")
             }
 
+            Section {
+                @Bindable var app = app
+                Toggle("Sync reading from Kobo when connected", isOn: $app.syncKoboAutomatically)
+            } footer: {
+                caption("Reads how far you are through each book, how long you've spent reading, finished books and highlights from your Kobo. Nightstand only reads the Kobo's records; it never changes them.")
+            }
+
             if !manager.candidates.isEmpty {
                 Section {
                     ForEach(manager.candidates, id: \.self) { volume in

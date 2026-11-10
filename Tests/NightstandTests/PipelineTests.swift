@@ -229,6 +229,71 @@ final class PipelineTests: XCTestCase {
         XCTAssertFalse(Goodreads.matches(entries[1], other))
     }
 
+    func testKoboReadingSync() throws {
+        // A Kobo database in WAL mode, as on the device, with one sideloaded and one store book.
+        let device = work.appending(path: "KOBOeReader")
+        try FileManager.default.createDirectory(at: device.appending(path: ".kobo"), withIntermediateDirectories: true)
+        let sql = """
+            PRAGMA journal_mode=WAL;
+            CREATE TABLE content (ContentID TEXT, ContentType TEXT, Title TEXT, Attribution TEXT, ReadStatus INT,
+                ___PercentRead INT, DateLastRead TEXT, TimeSpentReading INT);
+            CREATE TABLE Bookmark (BookmarkID TEXT, VolumeID TEXT, ContentID TEXT, Text TEXT, Annotation TEXT,
+                DateCreated TEXT, Type TEXT, Hidden TEXT);
+            INSERT INTO content VALUES ('file:///mnt/onboard/Weir, Andy/Project Hail Mary.kepub.epub', '6',
+                'Project Hail Mary: A Novel', 'Andy Weir', 1, 21, '2026-08-25T05:23:44Z', 13626);
+            INSERT INTO content VALUES ('file:///mnt/onboard/Weir, Andy/Project Hail Mary.kepub.epub!ch1', '9',
+                'Chapter 1', '', 0, 0, NULL, NULL);
+            INSERT INTO content VALUES ('0a1b-store', '6', 'Dune', 'Frank Herbert', 2, 100,
+                '2026-07-25T21:16:00.401', 20863);
+            INSERT INTO content VALUES ('file:///mnt/onboard/Nobody/Unknown.epub', '6', 'Not in library', 'Nobody', 1, 5,
+                NULL, NULL);
+            INSERT INTO Bookmark VALUES ('b1', 'file:///mnt/onboard/Weir, Andy/Project Hail Mary.kepub.epub', 'x',
+                '  Amaze, amaze, amaze! ', NULL, '2026-08-20T10:00:00.000', 'highlight', 'false');
+            INSERT INTO Bookmark VALUES ('b2', '0a1b-store', 'x', NULL, NULL, '2026-07-01T10:00:00Z', 'dogear', 'false');
+            INSERT INTO Bookmark VALUES ('b3', '0a1b-store', 'x', 'Fear is the mind-killer.', 'Litany', NULL,
+                'highlight', 'false');
+            """
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        process.arguments = [KoboReading.databaseURL(on: device).path, sql]
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+
+        let records = try KoboReading.read(deviceRoot: device)
+        XCTAssertEqual(records.count, 3)
+        XCTAssertEqual(records[0].devicePath, "Weir, Andy/Project Hail Mary.kepub.epub")
+        XCTAssertEqual(records[0].secondsReading, 13626)
+        XCTAssertEqual(records[0].highlights.map(\Highlight.text), ["Amaze, amaze, amaze!" as String?])
+        XCTAssertEqual(records[1].highlights.map(\Highlight.note), ["Litany" as String?])
+        XCTAssertEqual(records[1].lastRead, KoboReading.parseDate("2026-07-25T21:16:00Z"))
+
+        var hailMary = Book(title: "Project Hail Mary", format: .epub)
+        hailMary.authors = ["Andy Weir"]
+        var dune = Book(title: "Dune", format: .epub)
+        dune.authors = ["Frank Herbert"]
+        var other = Book(title: "Dune Messiah", format: .epub)
+        other.authors = ["Frank Herbert"]
+        let manifest = [hailMary.id: "Weir, Andy/Project Hail Mary.kepub.epub"]
+
+        let (changed, summary) = KoboReading.merge(records, into: [hailMary, dune, other], manifest: manifest)
+        XCTAssertEqual(summary, KoboReading.Summary(booksUpdated: 2, finished: 1, newHighlights: 2, unmatched: 1))
+        let synced: [UUID: Book] = Dictionary(uniqueKeysWithValues: changed.map { ($0.id, $0) })
+        XCTAssertEqual(synced[hailMary.id]?.status, .reading)
+        XCTAssertEqual(synced[hailMary.id]?.progress, 0.21)
+        XCTAssertEqual(synced[hailMary.id]?.readingTimeText?.isEmpty, false)
+        XCTAssertEqual(synced[dune.id]?.status, .finished)
+        XCTAssertEqual(synced[dune.id]?.progress, 1)
+        XCTAssertEqual(synced[dune.id]?.dateFinished, records[1].lastRead)
+        XCTAssertNil(synced[other.id])
+
+        // Syncing again changes nothing; a book marked abandoned stays abandoned.
+        let again = KoboReading.merge(records, into: changed + [other], manifest: manifest)
+        XCTAssertTrue(again.changed.isEmpty)
+        dune.status = .abandoned
+        XCTAssertEqual(KoboReading.merge(records, into: [dune], manifest: [:]).changed.first?.status, .abandoned)
+    }
+
     func testBatchEditChangesOnlyChosenFields() {
         func book(_ title: String, series: String? = nil, index: Double? = nil, tags: [String] = []) -> Book {
             var book = Book(title: title, format: .epub)
@@ -696,5 +761,29 @@ final class PipelineTests: XCTestCase {
             XCTAssertGreaterThan(converted, 0, file.lastPathComponent)
             XCTAssertEqual(try EPUBReader.read(output).metadata.title, book.title)
         }
+    }
+}
+
+/// Dry run against a real Kobo: `NIGHTSTAND_KOBO=/Volumes/KOBOeReader swift test --filter KoboDryRun`.
+/// Reads a copy of the device's database and the library, prints what would change, saves nothing.
+final class KoboDryRunTests: XCTestCase {
+    func testKoboDryRun() throws {
+        guard let path = ProcessInfo.processInfo.environment["NIGHTSTAND_KOBO"] else {
+            throw XCTSkip("Set NIGHTSTAND_KOBO to a mounted Kobo.")
+        }
+        let root = URL(fileURLWithPath: path)
+        let records = try KoboReading.read(deviceRoot: root)
+        let books = try LibraryIndex.load(from: LibraryStore.defaultRoot)
+        let (changed, summary) = KoboReading.merge(records, into: books, manifest: DeviceScanner.readManifest(on: root))
+        print("KOBO: \(records.count) books on device, \(summary)")
+        for book in changed {
+            print("KOBO CHANGE: \(book.title) — \(book.status.rawValue) \(Int((book.progress ?? 0) * 100))% \(book.readingTimeText ?? "-") highlights \(book.highlights?.count ?? 0)")
+        }
+        let matched = Set(changed.map(\.title))
+        for record in records where record.readStatus > 0 || record.percentRead > 0 {
+            print("KOBO RECORD: \(record.title) | \(record.author) | \(record.readStatus) \(record.percentRead)%")
+        }
+        XCTAssertFalse(records.isEmpty)
+        _ = matched
     }
 }

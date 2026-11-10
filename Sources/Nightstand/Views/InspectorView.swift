@@ -83,6 +83,10 @@ private struct BookInspector: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
 
+                if book.progress != nil || book.readingTimeText != nil {
+                    readingProgress(book)
+                }
+
                 actions(book)
 
                 section("Notes") {
@@ -107,6 +111,12 @@ private struct BookInspector: View {
                     }
                 }
 
+                if let highlights = book.highlights, !highlights.isEmpty {
+                    section("Highlights (\(highlights.count))") {
+                        HighlightList(highlights: highlights)
+                    }
+                }
+
                 if !book.tags.isEmpty {
                     section("Tags") {
                         FlowLayout {
@@ -123,6 +133,26 @@ private struct BookInspector: View {
             .padding(18)
             .animation(.snappy, value: book.status)
         }
+    }
+
+    private func readingProgress(_ book: Book) -> some View {
+        let progress = book.status == .finished ? 1 : (book.progress ?? 0)
+        let parts = [book.readingTimeText.map { "\($0) read" },
+                     book.lastRead.map { "last read \($0.formatted(.relative(presentation: .named)))" }]
+            .compactMap { $0 }
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text(book.status == .finished ? "Finished" : "\(Int(progress * 100))% read")
+                    .font(.callout.weight(.medium).monospacedDigit())
+                Spacer()
+                Text(parts.joined(separator: " · "))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            ProgressView(value: progress)
+                .tint(book.status == .finished ? .green : .accentColor)
+        }
+        .help("From your e-reader")
     }
 
     private func cover(_ book: Book) -> some View {
@@ -217,6 +247,45 @@ private struct BookInspector: View {
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct HighlightList: View {
+    let highlights: [Highlight]
+    @State private var expanded = false
+
+    var body: some View {
+        let shown = expanded ? highlights : Array(highlights.prefix(3))
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(shown) { highlight in
+                VStack(alignment: .leading, spacing: 4) {
+                    if let text = highlight.text {
+                        Text(text)
+                            .font(.system(.callout, design: .serif))
+                            .italic()
+                            .padding(.leading, 10)
+                            .overlay(alignment: .leading) {
+                                Capsule().fill(Color.yellow.opacity(0.7)).frame(width: 3)
+                            }
+                    }
+                    if let note = highlight.note {
+                        Label(note, systemImage: "text.bubble")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if highlights.count > 3 {
+                Button(expanded ? "Show Fewer" : "Show All \(highlights.count)") {
+                    withAnimation(.snappy) { expanded.toggle() }
+                }
+                .buttonStyle(.plain)
+                .font(.callout)
+                .foregroundStyle(.tint)
+            }
+        }
     }
 }
 

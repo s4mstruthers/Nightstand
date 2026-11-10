@@ -74,7 +74,17 @@ final class AppModel {
         store = LibraryStore(activity: activity)
         devices = DeviceManager(activity: activity)
         updater = Updater(activity: activity)
+        devices.onConnect = { [weak self] device in
+            guard let self, device.kind == .kobo, self.syncKoboAutomatically else { return }
+            self.syncReading(from: device.id, automatic: true)
+        }
     }
+
+    /// Whether reading progress and highlights are read from a Kobo as soon as it is plugged in.
+    var syncKoboAutomatically = UserDefaults.standard.object(forKey: "syncKoboReading") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(syncKoboAutomatically, forKey: "syncKoboReading") }
+    }
+    private(set) var syncingDevice: String?
 
     // MARK: Derived
 
@@ -179,6 +189,37 @@ final class AppModel {
             var ordered = visibleBooks.map(\.id).filter { ids.contains($0) }
             ordered += store.books.map(\.id).filter { ids.contains($0) && !ordered.contains($0) }
             batchEditing = BatchEditSession(bookIDs: ordered)
+        }
+    }
+
+    /// Reads progress, reading time and highlights from a Kobo into the library. The device is not changed.
+    func syncReading(from deviceID: String, automatic: Bool = false) {
+        guard let device = devices.device(deviceID), device.kind == .kobo, syncingDevice == nil else { return }
+        syncingDevice = deviceID
+        activity.set("Reading progress from \(device.name)…")
+        let root = device.url
+        Task {
+            defer { syncingDevice = nil }
+            do {
+                let records = try await Task.detached { try KoboReading.read(deviceRoot: root) }.value
+                let (changed, summary) = KoboReading.merge(records, into: store.books, manifest: device.manifest)
+                for book in changed { store.update(book) }
+                if changed.isEmpty {
+                    activity.flash("Reading progress is up to date", detail: automatic ? device.name : nil)
+                } else {
+                    var detail: [String] = []
+                    if summary.finished > 0 { detail.append("\(summary.finished) finished") }
+                    if summary.newHighlights > 0 {
+                        detail.append("\(summary.newHighlights) new highlight\(summary.newHighlights == 1 ? "" : "s")")
+                    }
+                    activity.flash("Synced reading for \(changed.count) book\(changed.count == 1 ? "" : "s") from \(device.name)",
+                                   detail: detail.isEmpty ? nil : detail.joined(separator: " · "))
+                }
+            } catch KoboReading.ReadError.missing where automatic {
+                activity.flash("Connected \(device.name)")
+            } catch {
+                activity.flash("Couldn't sync reading from \(device.name)", detail: error.localizedDescription)
+            }
         }
     }
 

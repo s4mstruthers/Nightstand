@@ -130,6 +130,11 @@ struct BookCell: View {
                             .font(.caption2)
                             .foregroundStyle(book.status == .finished ? Color.green : Color.accentColor)
                     }
+                    if book.status == .reading, let progress = book.progress, progress > 0 {
+                        Text("\(Int(progress * 100))%")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .frame(height: 12)
             }

@@ -38,6 +38,13 @@ struct DeviceView: View {
                             Text(book.authorText).font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
+                        if book.status == .finished {
+                            Image(systemName: "checkmark.circle").foregroundStyle(.green).help("Finished")
+                        } else if let progress = book.progress, progress > 0 {
+                            Text("\(Int(progress * 100))%")
+                                .font(.callout.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
                         Button("Remove", systemImage: "minus.circle") {
                             withAnimation(.snappy) { app.devices.remove(bookIDs: [book.id], from: device.id) }
                         }
@@ -115,6 +122,14 @@ struct DeviceView: View {
                 Text("\(ByteCountFormatter.string(fromByteCount: device.free, countStyle: .file)) free of \(ByteCountFormatter.string(fromByteCount: device.total, countStyle: .file))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            if device.kind == .kobo {
+                Button("Sync Reading", systemImage: "arrow.triangle.2.circlepath") {
+                    app.syncReading(from: device.id)
+                }
+                .controlSize(.large)
+                .disabled(app.syncingDevice != nil)
+                .help("Read progress, reading time and highlights from \(device.name)")
             }
             Button("Eject", systemImage: "eject") { app.devices.eject(device) }
                 .controlSize(.large)

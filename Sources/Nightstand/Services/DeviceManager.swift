@@ -155,6 +155,8 @@ final class DeviceManager {
     private(set) var candidates: [URL] = []
     private let activity: ActivityCenter
     private var observers: [NSObjectProtocol] = []
+    /// Called once for each e-reader that appears, including those already plugged in at launch.
+    var onConnect: ((ReaderDevice) -> Void)?
 
     /// Names of generic volumes the user chose to treat as e-readers.
     private var adopted: Set<String> {
@@ -178,6 +180,10 @@ final class DeviceManager {
         let adopted = adopted
         Task {
             let result = await Task.detached { DeviceScanner.scan(adopted: adopted) }.value
+            let known = Set(devices.map(\.id))
+            defer {
+                for device in result.devices where !known.contains(device.id) { onConnect?(device) }
+            }
             withAnimation(.snappy) {
                 devices = result.devices
                 candidates = result.candidates

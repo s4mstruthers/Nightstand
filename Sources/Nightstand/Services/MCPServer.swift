@@ -117,7 +117,7 @@ enum MCPServer {
                     "offset": ["type": "integer"],
                  ]),
             tool("get_books",
-                 "Full details for up to 25 books by id, including the user's notes, the description, publisher and dates.",
+                 "Full details for up to 25 books by id, including the user's notes, the description, publisher, dates, reading progress and time from their e-reader, and their highlights.",
                  readOnly: true, properties: ["ids": strings], required: ["ids"]),
             tool("update_books",
                  "Edit details of one or more books. Only the fields you include change. Use it to fix titles and author names, set series, tag, rate, or change reading status. Cannot delete books. The previous library index is backed up once per day before the first edit.",
@@ -179,6 +179,7 @@ enum MCPServer {
         if let index = book.seriesIndex { json["series_index"] = index }
         if !book.tags.isEmpty { json["tags"] = book.tags }
         if let finished = book.dateFinished { json["date_finished"] = day.string(from: finished) }
+        if let progress = book.progress, book.status == .reading { json["percent_read"] = Int(progress * 100) }
         return json
     }
 
@@ -192,6 +193,18 @@ enum MCPServer {
         if let language = book.language { json["language"] = language }
         if let isbn = book.isbn { json["isbn"] = isbn }
         if let started = book.dateStarted { json["date_started"] = day.string(from: started) }
+        if let progress = book.progress { json["percent_read"] = Int(progress * 100) }
+        if let lastRead = book.lastRead { json["last_read"] = day.string(from: lastRead) }
+        if let seconds = book.readingSeconds { json["reading_minutes"] = seconds / 60 }
+        if let highlights = book.highlights, !highlights.isEmpty {
+            json["highlights"] = highlights.map { highlight in
+                var item: [String: Any] = [:]
+                if let text = highlight.text { item["text"] = text }
+                if let note = highlight.note { item["note"] = note }
+                if let date = highlight.date { item["date"] = day.string(from: date) }
+                return item
+            }
+        }
         return json
     }
 
