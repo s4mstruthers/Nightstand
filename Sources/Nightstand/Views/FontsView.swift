@@ -89,7 +89,8 @@ struct FontsView: View {
                         ProgressView().frame(maxWidth: .infinity)
                     }
                     ForEach(filtered) { font in
-                        row(font.name, detail: font.category, saved: isMine(font.name), installed: isOnDevice(font.name))
+                        row(font.name, detail: font.category, sample: .google(font), saved: isMine(font.name),
+                            installed: isOnDevice(font.name))
                             .tag(Choice.google(font))
                     }
                 case .mine:
@@ -98,8 +99,8 @@ struct FontsView: View {
                             .foregroundStyle(.secondary)
                     }
                     ForEach(mine) { font in
-                        row(font.displayName, detail: font.styleNames.joined(separator: ", "), saved: false,
-                            installed: isOnDevice(font.name))
+                        row(font.displayName, detail: font.styleNames.joined(separator: ", "), sample: .local(font),
+                            saved: false, installed: isOnDevice(font.name))
                             .tag(Choice.local(font))
                     }
                 case .device:
@@ -109,7 +110,8 @@ struct FontsView: View {
                         Text("No extra fonts are on your Kobo yet.").foregroundStyle(.secondary)
                     }
                     ForEach(onDevice) { font in
-                        row(font.displayName, detail: font.styleNames.joined(separator: ", "), saved: false, installed: false)
+                        row(font.displayName, detail: font.styleNames.joined(separator: ", "), sample: .local(font),
+                            saved: false, installed: false)
                             .tag(Choice.local(font))
                     }
                 }
@@ -128,10 +130,10 @@ struct FontsView: View {
         .background(.background)
     }
 
-    private func row(_ name: String, detail: String, saved: Bool, installed: Bool) -> some View {
+    private func row(_ name: String, detail: String, sample: Choice, saved: Bool, installed: Bool) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 1) {
-                Text(name)
+                FontNameLabel(name: name, sample: sample, cache: previewCache.appending(path: "Names"))
                 Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
@@ -216,12 +218,14 @@ struct FontsView: View {
                     Button("Add to My Fonts", systemImage: "plus") { run { try await save(font) } }
                 }
                 if let kobo {
-                    Button(isOnDevice(font.name) ? "Installed on \(kobo.name)" : "Install on \(kobo.name)",
-                           systemImage: "arrow.down.to.line") {
-                        run { try await install(font, on: kobo) }
+                    if isOnDevice(font.name) {
+                        removeFromKoboButton(font.name, kobo: kobo)
+                    } else {
+                        Button("Install on \(kobo.name)", systemImage: "arrow.down.to.line") {
+                            run { try await install(font, on: kobo) }
+                        }
+                        .buttonStyle(.borderedProminent)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(isOnDevice(font.name))
                 }
             case (.local(let font), .device):
                 if !isMine(font.name) {
@@ -237,12 +241,14 @@ struct FontsView: View {
                 }
             case (.local(let font), _):
                 if let kobo {
-                    Button(isOnDevice(font.name) ? "Installed on \(kobo.name)" : "Install on \(kobo.name)",
-                           systemImage: "arrow.down.to.line") {
-                        run { try FontLibrary.copy(font, to: FontLibrary.deviceFolder(on: kobo.url)) }
+                    if isOnDevice(font.name) {
+                        removeFromKoboButton(font.name, kobo: kobo)
+                    } else {
+                        Button("Install on \(kobo.name)", systemImage: "arrow.down.to.line") {
+                            run { try FontLibrary.copy(font, to: FontLibrary.deviceFolder(on: kobo.url)) }
+                        }
+                        .buttonStyle(.borderedProminent)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(isOnDevice(font.name))
                 }
                 Button("Remove", systemImage: "trash", role: .destructive) {
                     run {
@@ -258,6 +264,19 @@ struct FontsView: View {
         if kobo == nil, source != .device {
             Text("Plug in your Kobo to install fonts on it.").font(.callout).foregroundStyle(.secondary)
         }
+    }
+
+    /// Takes a family off the Kobo. Its copy in My Fonts, if any, stays.
+    private func removeFromKoboButton(_ name: String, kobo: ReaderDevice) -> some View {
+        Button("Remove from \(kobo.name)", systemImage: "trash", role: .destructive) {
+            run {
+                guard let installed = onDevice.first(where: { key($0.name) == key(name) }) else { return }
+                FontLibrary.remove(installed)
+                app.activity.flash("Removed \(installed.displayName) from \(kobo.name)",
+                                   detail: "Books set in it will use the Kobo's default font.")
+            }
+        }
+        .help("Installed on \(kobo.name). Removing it keeps any copy in My Fonts.")
     }
 
     private func subtitle(_ choice: Choice) -> String {
@@ -365,6 +384,53 @@ struct FontsView: View {
             try? fm.copyItem(at: url, to: destination)
         }
         reloadLocal()
+    }
+}
+
+/// A font's name written in that font, fetched when its row scrolls into view. Shows the name in the
+/// system font until the sample arrives, or if it can't be had.
+private struct FontNameLabel: View {
+    let name: String
+    let sample: FontsView.Choice
+    let cache: URL
+
+    @State private var font: Font?
+    private static let size: CGFloat = 17
+    @MainActor private static var loaded: [String: Font] = [:]
+
+    private var key: String {
+        switch sample {
+        case .google(let font): "g:" + font.name
+        case .local(let font): "l:" + (font.regular?.path ?? font.name)
+        }
+    }
+
+    var body: some View {
+        Text(name)
+            .font(font ?? Self.loaded[key] ?? .body)
+            .lineLimit(1)
+            .task(id: key) { await load() }
+    }
+
+    private func load() async {
+        if let known = Self.loaded[key] {
+            font = known
+            return
+        }
+        var data: Data?
+        switch sample {
+        case .google(let google):
+            // A short pause so flicking fast past a row doesn't fetch it.
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            data = try? await GoogleFonts.nameSample(google, cache: cache)
+        case .local(let local):
+            data = local.regular.flatMap { try? Data(contentsOf: $0) }
+        }
+        guard !Task.isCancelled, let data, let ctFont = FontLibrary.font(from: data, size: Self.size) else { return }
+        let made = Font(ctFont)
+        Self.loaded[key] = made
+        withAnimation(.easeOut(duration: 0.15)) { font = made }
     }
 }
 

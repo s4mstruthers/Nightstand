@@ -134,6 +134,26 @@ enum GoogleFonts {
         return files
     }
 
+    /// A tiny file holding only the letters of the family's name, so a list can show each name in its own
+    /// font. Kept in `cache`; a few kilobytes each.
+    static func nameSample(_ font: GoogleFont, cache: URL) async throws -> Data {
+        let file = cache.appending(path: FontLibrary.fileName(family: font.name, style: .regular, extension: "ttf"))
+        if let data = try? Data(contentsOf: file), !data.isEmpty { return data }
+        var components = URLComponents(string: "https://fonts.googleapis.com/css2")!
+        components.queryItems = [URLQueryItem(name: "family", value: font.name),
+                                 URLQueryItem(name: "text", value: font.name)]
+        var request = URLRequest(url: components.url!, timeoutInterval: 20)
+        request.setValue("Nightstand", forHTTPHeaderField: "User-Agent")
+        let (css, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200,
+              let url = parseStylesheet(String(decoding: css, as: UTF8.self))[.regular] else { throw Unavailable() }
+        let (data, fileResponse) = try await URLSession.shared.data(from: url)
+        guard (fileResponse as? HTTPURLResponse)?.statusCode == 200, !data.isEmpty else { throw Unavailable() }
+        try? FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        try? data.write(to: file, options: .atomic)
+        return data
+    }
+
     /// Downloads the chosen styles into `folder`, named the way Kobo expects. Returns the files written.
     @discardableResult
     static func download(_ font: GoogleFont, styles: [FontStyle] = FontStyle.allCases, to folder: URL) async throws -> [URL] {
@@ -222,6 +242,13 @@ enum FontLibrary {
 
     static func remove(_ font: LocalFont) {
         for file in font.files { try? FileManager.default.removeItem(at: file) }
+    }
+
+    /// A font to draw with straight from its file's bytes, without registering it with the system, so a
+    /// partial sample can't be mistaken for the full font elsewhere in the app.
+    static func font(from data: Data, size: CGFloat) -> CTFont? {
+        guard let descriptor = CTFontManagerCreateFontDescriptorFromData(data as CFData) else { return nil }
+        return CTFontCreateWithFontDescriptor(descriptor, size, nil)
     }
 
     /// Makes a font file usable for drawing in this app and returns the name to ask for it by.
