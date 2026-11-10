@@ -31,11 +31,6 @@ final class ActivityCenter {
 /// The library: a folder of book files plus one JSON file describing them.
 @MainActor @Observable
 final class LibraryStore {
-    private struct LibraryFile: Codable {
-        var version = 1
-        var books: [Book]
-    }
-
     private(set) var books: [Book] = []
     let root: URL
     let activity: ActivityCenter
@@ -43,6 +38,10 @@ final class LibraryStore {
     private var booksFolder: URL { root.appending(path: "Books") }
     private var indexURL: URL { root.appending(path: "library.json") }
     private var pendingSave: Task<Void, Never>?
+    private var hasUnsavedChanges = false
+    /// The index's modification date as this process last read or wrote it.
+    private var knownModification: Date?
+    private var watcher: Timer?
 
     nonisolated static var defaultRoot: URL {
         if let override = ProcessInfo.processInfo.environment["NIGHTSTAND_LIBRARY"], !override.isEmpty {
@@ -56,6 +55,10 @@ final class LibraryStore {
         self.activity = activity
         try? FileManager.default.createDirectory(at: booksFolder, withIntermediateDirectories: true)
         load()
+        // The MCP server (an AI assistant) may edit the index while the app is open.
+        watcher = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.reloadIfChanged() }
+        }
     }
 
     // MARK: Paths
@@ -73,19 +76,25 @@ final class LibraryStore {
     // MARK: Persistence
 
     private func load() {
-        guard let data = try? Data(contentsOf: indexURL) else { return }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
         do {
-            books = try decoder.decode(LibraryFile.self, from: data).books
+            let loaded = try LibraryIndex.load(from: root)
+            if loaded != books { withAnimation(.snappy) { books = loaded } }
         } catch {
             // Never overwrite an index we could not read; keep it for recovery.
             let backup = root.appending(path: "library-unreadable-\(Int(Date().timeIntervalSince1970)).json")
             try? FileManager.default.copyItem(at: indexURL, to: backup)
         }
+        knownModification = LibraryIndex.modificationDate(in: root)
+    }
+
+    /// Picks up edits made by another process, unless there are local edits still waiting to be saved.
+    func reloadIfChanged() {
+        guard !hasUnsavedChanges, LibraryIndex.modificationDate(in: root) != knownModification else { return }
+        load()
     }
 
     private func scheduleSave() {
+        hasUnsavedChanges = true
         pendingSave?.cancel()
         pendingSave = Task {
             try? await Task.sleep(for: .milliseconds(400))
@@ -95,11 +104,9 @@ final class LibraryStore {
 
     func saveNow() {
         pendingSave?.cancel()
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(LibraryFile(books: books)) else { return }
-        try? data.write(to: indexURL, options: .atomic)
+        try? LibraryIndex.save(books, to: root)
+        hasUnsavedChanges = false
+        knownModification = LibraryIndex.modificationDate(in: root)
     }
 
     // MARK: Editing
@@ -107,12 +114,14 @@ final class LibraryStore {
     func book(_ id: UUID) -> Book? { books.first { $0.id == id } }
 
     func update(_ book: Book) {
+        reloadIfChanged()
         guard let index = books.firstIndex(where: { $0.id == book.id }), books[index] != book else { return }
         books[index] = book
         scheduleSave()
     }
 
     func modify(_ ids: Set<UUID>, _ change: (inout Book) -> Void) {
+        reloadIfChanged()
         for index in books.indices where ids.contains(books[index].id) {
             change(&books[index])
         }
@@ -120,18 +129,7 @@ final class LibraryStore {
     }
 
     func setStatus(_ status: ReadingStatus, for ids: Set<UUID>) {
-        modify(ids) { book in
-            guard book.status != status else { return }
-            book.status = status
-            switch status {
-            case .reading: if book.dateStarted == nil { book.dateStarted = Date() }
-            case .finished: if book.dateFinished == nil { book.dateFinished = Date() }
-            case .unread:
-                book.dateStarted = nil
-                book.dateFinished = nil
-            case .abandoned: break
-            }
-        }
+        modify(ids) { $0.setStatus(status) }
     }
 
     func setCover(_ imageData: Data, for id: UUID) {

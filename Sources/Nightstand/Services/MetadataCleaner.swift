@@ -81,6 +81,16 @@ enum MetadataCleaner {
             }
         }
 
+        // Blurbs often say it outright: "Stars Asunder is book 9 of the System Apocalypse".
+        var seriesByKey: [String: String] = [:]
+        for name in cleaned.compactMap({ $0.series }) where !name.isEmpty { seriesByKey[seriesKey(name)] = name }
+        for index in cleaned.indices where cleaned[index].series?.isEmpty != false {
+            if let found = seriesInDescription(cleaned[index].summary ?? "", known: seriesByKey) {
+                cleaned[index].series = found.series
+                cleaned[index].seriesIndex = found.index
+            }
+        }
+
         // Pass 3: drop marketing subtitles, then settle on one spelling per series and per author.
         for index in cleaned.indices {
             cleaned[index].title = stripMarketingSubtitle(cleaned[index].title)
@@ -216,6 +226,37 @@ enum MetadataCleaner {
         // two-book rule; this guards against leading numbers such as "1954 Ray Bradbury").
         guard !series.isEmpty, series.contains(where: \.isLetter) else { return nil }
         return (series, index)
+    }
+
+    private static let numberWords = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+                                      "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+                                      "seventeen", "eighteen", "nineteen", "twenty"]
+
+    private static func number(_ text: String) -> Double? {
+        Double(text) ?? numberWords.firstIndex(of: text.lowercased()).map { Double($0 + 1) }
+    }
+
+    /// Finds "book 9 of the System Apocalypse" or "System Apocalypse, Book 9" for a series the library
+    /// already knows. Unknown series are ignored, because blurbs mention plenty of other books.
+    static func seriesInDescription(_ text: String, known: [String: String]) -> (series: String, index: Double)? {
+        guard !text.isEmpty, !known.isEmpty else { return nil }
+        let count = #"(\d{1,3}|"# + numberWords.joined(separator: "|") + ")"
+        if let groups = firstMatch(#"\bbook\s+"# + count + #"\s+(?:of|in)\s+([^.;:!?\n]{3,80})"#, in: text),
+           let index = number(groups[1]) {
+            // The phrase runs on past the name, so accept the longest known series it starts with.
+            let phrase = seriesKey(groups[2])
+            if let key = known.keys.filter({ phrase.hasPrefix($0) }).max(by: { $0.count < $1.count }),
+               let name = known[key] {
+                return (name, index)
+            }
+        }
+        for (_, name) in known.sorted(by: { $0.key.count > $1.key.count }) {
+            var bare = name
+            if bare.lowercased().hasPrefix("the ") { bare.removeFirst(4) }
+            let pattern = NSRegularExpression.escapedPattern(for: bare) + #",?\s+(?:book\s+|#)"# + count + #"\b"#
+            if let groups = firstMatch(pattern, in: text), let index = number(groups[1]) { return (name, index) }
+        }
+        return nil
     }
 
     private static func mainTitle(_ title: String) -> String {

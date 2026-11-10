@@ -9,6 +9,8 @@ struct SettingsView: View {
                 .tabItem { Label("Devices", systemImage: "ipad.landscape") }
             LibrarySettings()
                 .tabItem { Label("Library", systemImage: "books.vertical") }
+            AssistantSettings()
+                .tabItem { Label("AI Assistants", systemImage: "sparkles") }
         }
         .frame(width: 520)
     }
@@ -197,5 +199,59 @@ private struct LibrarySettings: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+private struct AssistantSettings: View {
+    @State private var copied: String?
+
+    private var executable: String { Bundle.main.executablePath ?? "/Applications/Nightstand.app/Contents/MacOS/Nightstand" }
+
+    private var configuration: String {
+        """
+        {
+          "mcpServers": {
+            "nightstand": {
+              "command": "\(executable)",
+              "args": ["--mcp"]
+            }
+          }
+        }
+        """
+    }
+
+    private var claudeCodeCommand: String { "claude mcp add nightstand -- \"\(executable)\" --mcp" }
+
+    var body: some View {
+        Form {
+            Section {
+                Text("Nightstand includes an MCP server, so an AI assistant such as Claude can look through your library to recommend what to read next, and tidy titles, authors, series and tags for you.")
+                    .fixedSize(horizontal: false, vertical: true)
+            } footer: {
+                caption("The assistant can read your books' details, ratings and notes, and edit details. It cannot delete books or open the book files. Before the first edit each day, your library index is copied to the Backups folder in your library.")
+            }
+            snippet("Claude Desktop and other apps", text: configuration,
+                    footer: "Add this to the app's MCP configuration. In Claude Desktop: Settings → Developer → Edit Config.")
+            snippet("Claude Code", text: claudeCodeCommand, footer: "Run this once in a terminal.")
+        }
+        .formStyle(.grouped)
+    }
+
+    private func snippet(_ title: String, text: String, footer: String) -> some View {
+        Section {
+            Text(text)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button(copied == title ? "Copied" : "Copy") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+                copied = title
+            }
+        } header: {
+            Text(title)
+        } footer: {
+            caption(footer)
+        }
     }
 }

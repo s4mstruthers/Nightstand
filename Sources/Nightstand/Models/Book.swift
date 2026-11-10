@@ -136,6 +136,20 @@ enum BookSort: String, CaseIterable, Identifiable {
 }
 
 extension Book {
+    /// Changes the reading status and keeps the start and finish dates in step with it.
+    mutating func setStatus(_ newStatus: ReadingStatus, on date: Date = Date()) {
+        guard status != newStatus else { return }
+        status = newStatus
+        switch newStatus {
+        case .reading: if dateStarted == nil { dateStarted = date }
+        case .finished: if dateFinished == nil { dateFinished = date }
+        case .unread:
+            dateStarted = nil
+            dateFinished = nil
+        case .abandoned: break
+        }
+    }
+
     /// Books in a series first (by series, then position), then everything else by title.
     static func seriesOrder(_ a: Book, _ b: Book) -> Bool {
         let sa = a.series ?? "", sb = b.series ?? ""
@@ -222,5 +236,34 @@ struct FormatOptions: Codable, Equatable, Sendable {
         }
         guard !rules.isEmpty else { return nil }
         return (["/* Added by Nightstand */"] + rules).joined(separator: "\n") + "\n"
+    }
+}
+
+/// Reads and writes `library.json`. Shared by the app and the MCP server, which run as separate processes.
+enum LibraryIndex {
+    private struct File: Codable {
+        var version = 1
+        var books: [Book]
+    }
+
+    static func url(in root: URL) -> URL { root.appending(path: "library.json") }
+
+    static func modificationDate(in root: URL) -> Date? {
+        try? url(in: root).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+    }
+
+    /// An empty library when there is no index yet; throws when the index exists but cannot be read.
+    static func load(from root: URL) throws -> [Book] {
+        guard FileManager.default.fileExists(atPath: url(in: root).path) else { return [] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(File.self, from: Data(contentsOf: url(in: root))).books
+    }
+
+    static func save(_ books: [Book], to root: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(File(books: books)).write(to: url(in: root), options: .atomic)
     }
 }

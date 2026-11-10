@@ -15,7 +15,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+/// `Nightstand --mcp` runs the MCP server for AI assistants instead of opening the app.
 @main
+enum Main {
+    static func main() {
+        if CommandLine.arguments.contains("--mcp") {
+            MCPServer.run()
+        } else {
+            NightstandApp.main()
+        }
+    }
+}
+
 struct NightstandApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var app: AppModel

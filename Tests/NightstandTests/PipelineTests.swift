@@ -326,6 +326,103 @@ final class PipelineTests: XCTestCase {
         }
     }
 
+    func testSeriesFoundInDescription() {
+        let known = ["systemapocalypse": "The System Apocalypse", "cradle": "Cradle"]
+        let first = MetadataCleaner.seriesInDescription(
+            "Stars collide. Stars Asunder is book 9 of the System Apocalypse, the bestselling series.", known: known)
+        XCTAssertEqual(first?.series, "The System Apocalypse")
+        XCTAssertEqual(first?.index, 9)
+        XCTAssertEqual(MetadataCleaner.seriesInDescription("Book three in the Cradle series.", known: known)?.index, 3)
+        XCTAssertEqual(MetadataCleaner.seriesInDescription("System Apocalypse, Book 11.", known: known)?.index, 11)
+        XCTAssertNil(MetadataCleaner.seriesInDescription("Book 2 of the Wheel of Time.", known: known))
+        XCTAssertNil(MetadataCleaner.seriesInDescription("A fine standalone novel.", known: known))
+    }
+
+    func testMCPServerReadsAndUpdatesLibrary() throws {
+        var dune = Book(title: "Dune", format: .epub)
+        dune.authors = ["Frank Herbert"]
+        dune.rating = 5
+        dune.status = .finished
+        dune.notes = "Loved the ecology."
+        var zone = Book(title: "Forbidden Zone", format: .epub)
+        zone.authors = ["Wong, Tao"]
+        try LibraryIndex.save([dune, zone], to: work)
+
+        func request(_ method: String, _ params: [String: Any] = [:]) throws -> [String: Any] {
+            let response = try XCTUnwrap(MCPServer.handle(["jsonrpc": "2.0", "id": 1, "method": method, "params": params],
+                                                          root: work))
+            return try XCTUnwrap(response["result"] as? [String: Any], "\(response)")
+        }
+        func call(_ tool: String, _ arguments: [String: Any] = [:]) throws -> [String: Any] {
+            let result = try request("tools/call", ["name": tool, "arguments": arguments])
+            XCTAssertEqual(result["isError"] as? Bool, false, "\(result)")
+            let text = try XCTUnwrap((result["content"] as? [[String: Any]])?.first?["text"] as? String)
+            return try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        }
+
+        XCTAssertEqual(try request("initialize", ["protocolVersion": "2025-06-18"])["protocolVersion"] as? String,
+                       "2025-06-18")
+        XCTAssertNil(MCPServer.handle(["jsonrpc": "2.0", "method": "notifications/initialized"], root: work))
+        XCTAssertEqual((try request("tools/list")["tools"] as? [[String: Any]])?.count, 4)
+        XCTAssertNotNil(MCPServer.handle(["jsonrpc": "2.0", "id": 2, "method": "nope"], root: work)?["error"])
+
+        XCTAssertEqual(try call("library_summary")["total_books"] as? Int, 2)
+        let finished = try call("list_books", ["status": "finished"])
+        XCTAssertEqual(finished["total"] as? Int, 1)
+        XCTAssertEqual((finished["books"] as? [[String: Any]])?.first?["title"] as? String, "Dune")
+        let details = try call("get_books", ["ids": [dune.id.uuidString.lowercased()]])
+        XCTAssertEqual((details["books"] as? [[String: Any]])?.first?["notes"] as? String, "Loved the ecology.")
+
+        let updated = try call("update_books", ["updates": [
+            ["id": zone.id.uuidString, "authors": ["Tao Wong"], "series": "The System Apocalypse",
+             "series_index": 11, "add_tags": ["LitRPG"], "status": "reading", "append_note": "Set by assistant."],
+            ["id": "not-a-book", "rating": 3],
+        ]])
+        XCTAssertEqual(updated["books_changed"] as? Int, 1)
+
+        let saved = try XCTUnwrap(try LibraryIndex.load(from: work).first { $0.id == zone.id })
+        XCTAssertEqual(saved.authors, ["Tao Wong"])
+        XCTAssertEqual(saved.seriesText, "The System Apocalypse #11")
+        XCTAssertEqual(saved.tags, ["LitRPG"])
+        XCTAssertEqual(saved.status, .reading)
+        XCTAssertNotNil(saved.dateStarted)
+        XCTAssertEqual(saved.notes, "Set by assistant.")
+        let untouched = try XCTUnwrap(try LibraryIndex.load(from: work).first { $0.id == dune.id })
+        XCTAssertEqual(untouched.notes, dune.notes)
+        XCTAssertEqual(untouched.rating, 5)
+        let backups = try FileManager.default.contentsOfDirectory(atPath: work.appending(path: "Backups").path)
+        XCTAssertEqual(backups.count, 1)
+
+        // A bad status is reported per book and changes nothing.
+        let rejected = try call("update_books", ["updates": [["id": dune.id.uuidString, "status": "burned"]]])
+        XCTAssertEqual(rejected["books_changed"] as? Int, 0)
+    }
+
+    @MainActor
+    func testAppPicksUpEditsMadeByAnotherProcess() throws {
+        let book = Book(title: "Before", format: .epub)
+        try LibraryIndex.save([book], to: work)
+        let store = LibraryStore(root: work, activity: ActivityCenter())
+        XCTAssertEqual(store.books.first?.title, "Before")
+
+        // The MCP server rewrites the index while the app is open.
+        var edited = book
+        edited.title = "After"
+        edited.rating = 4
+        Thread.sleep(forTimeInterval: 0.05)
+        try LibraryIndex.save([edited], to: work)
+        store.reloadIfChanged()
+        XCTAssertEqual(store.books.first?.title, "After")
+
+        // A local edit made straight afterwards builds on the outside change instead of undoing it.
+        store.modify([book.id]) { $0.notes = "Mine" }
+        store.saveNow()
+        let saved = try XCTUnwrap(try LibraryIndex.load(from: work).first)
+        XCTAssertEqual(saved.title, "After")
+        XCTAssertEqual(saved.rating, 4)
+        XCTAssertEqual(saved.notes, "Mine")
+    }
+
     /// Imports a folder of books into a temporary library and prints what was read and what the clean-up
     /// would change: `NIGHTSTAND_SURVEY=/path/to/folder swift test --filter FolderSurvey`
     func testFolderSurvey() throws {

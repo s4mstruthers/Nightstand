@@ -55,6 +55,41 @@ uses Calibre's `ebook-convert` if Calibre is installed; otherwise those books ar
 Kindles released from 2024 onwards connect over MTP and do not appear as a drive on a Mac, so they cannot be
 used over USB.
 
+## AI assistants (MCP)
+
+Nightstand includes a [Model Context Protocol](https://modelcontextprotocol.io) server, so an AI assistant can
+look through your library to recommend what to read next, or organise it for you ("put all the Tao Wong books
+in their series", "tag everything I've finished this year").
+
+Settings → AI Assistants has the configuration ready to copy. For Claude Desktop and similar apps:
+
+```json
+{
+  "mcpServers": {
+    "nightstand": {
+      "command": "/Applications/Nightstand.app/Contents/MacOS/Nightstand",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+For Claude Code:
+
+```bash
+claude mcp add nightstand -- /Applications/Nightstand.app/Contents/MacOS/Nightstand --mcp
+```
+
+| Tool | What it does |
+| --- | --- |
+| `library_summary` | Counts by status and rating, every series, top authors and tags |
+| `list_books` | Browse or filter books by text, status, series, author, tag or rating |
+| `get_books` | Full details for chosen books, including your notes |
+| `update_books` | Edit titles, authors, series, tags, ratings, status and notes |
+
+The server cannot delete books or read the book files. Before the first edit each day it copies
+`library.json` into the library's `Backups` folder, and the app shows changes within a couple of seconds.
+
 ## Build from source
 
 Requires Xcode 16 or later.
