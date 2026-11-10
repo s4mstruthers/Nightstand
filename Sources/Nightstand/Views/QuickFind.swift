@@ -115,27 +115,28 @@ struct QuickFind: View {
         func matches(_ item: Item) -> Bool {
             (item.title + " " + item.subtitle + " " + item.keywords).lowercased().contains(needle)
         }
-        let books = app.store.books.filter { $0.searchText.contains(needle) }
-            .sorted { $0.title.lowercased().hasPrefix(needle) && !$1.title.lowercased().hasPrefix(needle) }
-            .prefix(12)
-            .map { book in
-                Item(id: book.id.uuidString, title: book.title, subtitle: book.authorText, symbol: "book", book: book) {
-                    app.showInLibrary(book)
-                }
+        let found: [Book] = app.store.books.filter { $0.searchText.contains(needle) }
+        let ranked: [Book] = found.sorted { (a: Book, b: Book) -> Bool in
+            a.title.lowercased().hasPrefix(needle) && !b.title.lowercased().hasPrefix(needle)
+        }
+        let books: [Item] = ranked.prefix(12).map { (book: Book) -> Item in
+            Item(id: book.id.uuidString, title: book.title, subtitle: book.authorText, symbol: "book", book: book) {
+                app.showInLibrary(book)
             }
-        let collections = Set(app.store.books.compactMap(\.series)).filter { $0.lowercased().contains(needle) }
-            .sorted().prefix(4).map { name in
-                Item(id: "series-" + name, title: name, subtitle: "Series", symbol: "square.stack") { go(.series(name)) }
+        }
+        func named(_ names: [String], kind: String, symbol: String, item: @escaping (String) -> SidebarItem) -> [Item] {
+            let matching: [String] = Set(names).filter { $0.lowercased().contains(needle) }.sorted()
+            return matching.prefix(4).map { (name: String) -> Item in
+                Item(id: kind + "-" + name, title: name, subtitle: kind, symbol: symbol) { go(item(name)) }
             }
-            + Set(app.store.books.flatMap(\.authors)).filter { $0.lowercased().contains(needle) }
-            .sorted().prefix(4).map { name in
-                Item(id: "author-" + name, title: name, subtitle: "Author", symbol: "person") { go(.author(name)) }
-            }
-            + Set(app.store.books.flatMap(\.tags)).filter { $0.lowercased().contains(needle) }
-            .sorted().prefix(4).map { name in
-                Item(id: "tag-" + name, title: name, subtitle: "Tag", symbol: "tag") { go(.tag(name)) }
-            }
-        return commands.filter(matches) + books + collections
+        }
+        let allBooks: [Book] = app.store.books
+        let series: [Item] = named(allBooks.compactMap(\.series), kind: "Series", symbol: "square.stack") { .series($0) }
+        let authors: [Item] = named(allBooks.flatMap(\.authors), kind: "Author", symbol: "person") { .author($0) }
+        let tags: [Item] = named(allBooks.flatMap(\.tags), kind: "Tag", symbol: "tag") { .tag($0) }
+        let collections: [Item] = series + authors + tags
+        let actions: [Item] = commands.filter(matches)
+        return actions + books + collections
     }
 
     private func go(_ item: SidebarItem) {
