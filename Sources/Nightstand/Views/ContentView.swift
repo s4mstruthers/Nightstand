@@ -18,6 +18,7 @@ struct ContentView: View {
                 case .discover: DiscoverView().transition(pageTransition)
                 case .journal: JournalView().transition(pageTransition)
                 case .organise: OrganiseView().transition(pageTransition)
+                case .fonts: FontsView().transition(pageTransition)
                 case .device(let id): DeviceView(deviceID: id).transition(pageTransition)
                 default: LibraryView().transition(.opacity)
                 }
@@ -109,6 +110,7 @@ struct ContentView: View {
         case .discover: "discover"
         case .journal: "journal"
         case .organise: "organise"
+        case .fonts: "fonts"
         case .device(let id): id
         default: "books"
         }

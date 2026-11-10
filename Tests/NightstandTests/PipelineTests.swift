@@ -383,6 +383,70 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(KoboCovers.refresh(for: "Nobody/Unknown.epub", cover: cover, on: work), 0)
     }
 
+    func testFonts() throws {
+        let catalogue = try GoogleFonts.parseCatalogue(Data(#"""
+            )]}'
+            {"familyMetadataList": [
+              {"family": "Lora", "category": "Serif", "popularity": 40, "fonts": {"400": {}, "400i": {}, "700": {}, "700i": {}}},
+              {"family": "Open Sans", "category": "Sans Serif", "popularity": 1, "fonts": {"400": {}, "700": {}}},
+              {"family": "Heavy Only", "category": "Display", "popularity": 5, "fonts": {"900": {}}}
+            ]}
+            """#.utf8))
+        XCTAssertEqual(catalogue.map(\.name), ["Open Sans", "Lora"])
+        XCTAssertEqual(catalogue[1].styles, FontStyle.allCases)
+        XCTAssertEqual(GoogleFonts.stylesheetURL(for: catalogue[1], styles: FontStyle.allCases).absoluteString,
+                       "https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,700;1,400;1,700")
+        XCTAssertEqual(GoogleFonts.stylesheetURL(for: catalogue[0], styles: FontStyle.allCases).absoluteString,
+                       "https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;700")
+        XCTAssertEqual(GoogleFonts.stylesheetURL(for: catalogue[1], styles: [.regular]).absoluteString,
+                       "https://fonts.googleapis.com/css2?family=Lora")
+
+        let files = GoogleFonts.parseStylesheet("""
+            @font-face { font-family: 'Lora'; font-style: italic; font-weight: 400;
+              src: url(https://fonts.gstatic.com/s/lora/v37/italic.ttf) format('truetype'); }
+            @font-face { font-family: 'Lora'; font-style: normal; font-weight: 700;
+              src: url(https://fonts.gstatic.com/s/lora/v37/bold.ttf) format('truetype'); }
+            @font-face { font-family: 'Lora'; font-style: normal; font-weight: 400;
+              src: url(https://evil.example/regular.ttf) format('truetype'); }
+            """)
+        XCTAssertEqual(files[.italic]?.lastPathComponent, "italic.ttf")
+        XCTAssertEqual(files[.bold]?.lastPathComponent, "bold.ttf")
+        XCTAssertNil(files[.regular], "Only Google's own font host is trusted")
+
+        XCTAssertEqual(FontLibrary.fileName(family: "Crimson Text", style: .boldItalic, extension: "ttf"),
+                       "CrimsonText-BoldItalic.ttf")
+        let folder = work.appending(path: "fonts")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for name in ["CrimsonText-Regular.ttf", "CrimsonText-Bold.ttf", "RobotoSlab-Thin.ttf", "notes.txt"] {
+            try Data("x".utf8).write(to: folder.appending(path: name))
+        }
+        let fonts = FontLibrary.fonts(in: folder)
+        XCTAssertEqual(fonts.map(\.name), ["CrimsonText", "RobotoSlab"])
+        XCTAssertEqual(fonts[0].displayName, "Crimson Text")
+        XCTAssertEqual(fonts[0].regular?.lastPathComponent, "CrimsonText-Regular.ttf")
+        XCTAssertEqual(fonts[0].styleNames, ["Bold", "Regular"])
+        let device = work.appending(path: "device/fonts")
+        try FontLibrary.copy(fonts[0], to: device)
+        XCTAssertEqual(FontLibrary.fonts(in: device).map(\.name), ["CrimsonText"])
+        FontLibrary.remove(FontLibrary.fonts(in: device)[0])
+        XCTAssertTrue(FontLibrary.fonts(in: device).isEmpty)
+    }
+
+    /// Downloads a real family: `NIGHTSTAND_LIVE_FONTS=1 swift test --filter LiveFont`.
+    func testLiveFontDownload() async throws {
+        guard ProcessInfo.processInfo.environment["NIGHTSTAND_LIVE_FONTS"] != nil else {
+            throw XCTSkip("Set NIGHTSTAND_LIVE_FONTS to download from Google Fonts.")
+        }
+        let catalogue = try await GoogleFonts.catalogue(cache: work.appending(path: "cache"))
+        XCTAssertGreaterThan(catalogue.count, 1000)
+        let lora = try XCTUnwrap(catalogue.first { $0.name == "Lora" })
+        let files = try await GoogleFonts.download(lora, to: work.appending(path: "Fonts"))
+        XCTAssertEqual(Set(files.map(\.lastPathComponent)),
+                       ["Lora-Regular.ttf", "Lora-Italic.ttf", "Lora-Bold.ttf", "Lora-BoldItalic.ttf"])
+        XCTAssertNotNil(FontLibrary.register(try XCTUnwrap(files.first { $0.lastPathComponent == "Lora-Regular.ttf" })))
+        print("FONTS: \(catalogue.count) families; Lora files \(files.map { (try? Data(contentsOf: $0).count) ?? 0 })")
+    }
+
     func testBatchEditChangesOnlyChosenFields() {
         func book(_ title: String, series: String? = nil, index: Double? = nil, tags: [String] = []) -> Book {
             var book = Book(title: title, format: .epub)

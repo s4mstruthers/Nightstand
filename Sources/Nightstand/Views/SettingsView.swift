@@ -103,8 +103,8 @@ private struct FormatPreview: View {
     let format: FormatOptions
 
     private let paragraphs = [
-        "It was a bright cold day in April, and the clocks were striking thirteen.",
-        "The hallway smelt of boiled cabbage and old rag mats. At one end of it a coloured poster, too large for indoor display, had been tacked to the wall.",
+        "It is a truth universally acknowledged, that a single man in possession of a good fortune, must be in want of a wife.",
+        "However little known the feelings or views of such a man may be on his first entering a neighbourhood, this truth is so well fixed in the minds of the surrounding families.",
     ]
 
     var body: some View {

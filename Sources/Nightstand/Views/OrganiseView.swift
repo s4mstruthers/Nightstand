@@ -52,6 +52,11 @@ struct OrganiseView: View {
                              status: app.settings.format.applyFormatting ? "On" : "Off", button: "Formatting Options…") {
                         app.showFormatting = true
                     }
+                    ToolCard(symbol: "textformat", tint: .mint, title: "Fonts",
+                             text: "Browse 1,900 free fonts from Google, see how a page looks in each on an e-reader, and install the ones you like on your Kobo with one click.",
+                             status: nil, button: "Browse Fonts") {
+                        withAnimation(.snappy) { app.sidebar = .fonts }
+                    }
                     ToolCard(symbol: "globe", tint: .teal, title: "Look Up Details Online",
                              text: "Finds the cover, description and publishing details for a book from Open Library and Google Books. Select a book and press ⌘L, or right-click it.",
                              status: nil, button: "Show Books Missing a Description",

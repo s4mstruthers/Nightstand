@@ -3,7 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum SidebarItem: Hashable {
-    case home, discover, journal, organise
+    case home, discover, journal, organise, fonts
     case favourites
     case needs(Insights.Issue)
     case all
@@ -110,7 +110,7 @@ final class AppModel {
         case .tag(let name): books = books.filter { $0.tags.contains(name) }
         case .favourites: books = books.filter(\.isFavourite)
         case .needs(let issue): books = books.filter(issue.matches)
-        case .all, .device, .home, .discover, .journal, .organise, nil: break
+        case .all, .device, .home, .discover, .journal, .organise, .fonts, nil: break
         }
         let query = search.trimmingCharacters(in: .whitespaces).lowercased()
         if !query.isEmpty { books = books.filter { $0.searchText.contains(query) } }
@@ -127,6 +127,7 @@ final class AppModel {
         case .discover: "Discover"
         case .journal: "Journal"
         case .organise: "Organise"
+        case .fonts: "Fonts"
         case .favourites: "Favourites"
         case .needs(let issue): issue.title
         case .all, nil: "All Books"
@@ -136,7 +137,7 @@ final class AppModel {
     /// True when the main area shows a list of books, as opposed to a page such as Home or a device.
     var showsBooks: Bool {
         switch sidebar {
-        case .home, .discover, .journal, .organise, .device: false
+        case .home, .discover, .journal, .organise, .fonts, .device: false
         default: true
         }
     }

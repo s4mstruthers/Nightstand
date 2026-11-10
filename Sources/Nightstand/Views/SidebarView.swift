@@ -17,6 +17,7 @@ struct SidebarView: View {
                 Label("Discover", systemImage: "sparkles").badge(fresh).tag(SidebarItem.discover)
                 Label("Journal", systemImage: "text.book.closed").tag(SidebarItem.journal)
                 Label("Organise", systemImage: "wand.and.stars").tag(SidebarItem.organise)
+                Label("Fonts", systemImage: "textformat").tag(SidebarItem.fonts)
             }
 
             Section("Library") {

@@ -7,7 +7,7 @@ import XCTest
 /// Nothing is written to a connected e-reader unless NIGHTSTAND_SNAPSHOT_DEVICE names its volume.
 @MainActor
 final class SnapshotTests: XCTestCase {
-    private func render(_ view: some View, size: NSSize, to url: URL, dark: Bool = false) throws {
+    private func render(_ view: some View, size: NSSize, to url: URL, dark: Bool = false) async throws {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                               styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
@@ -20,7 +20,8 @@ final class SnapshotTests: XCTestCase {
         window.orderFrontRegardless()
         defer { window.close() }
         host.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(2.5))
+        // Sleeping, not spinning the run loop, lets the pages' own main-actor tasks finish loading.
+        try await Task.sleep(for: .seconds(url.lastPathComponent == "fonts.png" ? 7 : 2.5))
         host.layoutSubtreeIfNeeded()
         let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
         host.cacheDisplay(in: host.bounds, to: rep)
@@ -35,7 +36,7 @@ final class SnapshotTests: XCTestCase {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let app = AppModel()
         app.updater.offer(try await UpdateFeed.fetchLatest())
-        try render(UpdateSheet().environment(app), size: NSSize(width: 500, height: 420),
+        try await render(UpdateSheet().environment(app), size: NSSize(width: 500, height: 420),
                    to: folder.appending(path: "update.png"))
     }
 
@@ -57,8 +58,8 @@ final class SnapshotTests: XCTestCase {
             InspectorView().frame(width: 350).background(Color(nsColor: .windowBackgroundColor))
         }
         .environment(app)
-        try render(main, size: NSSize(width: 1280, height: 820), to: folder.appending(path: "main-light.png"))
-        try render(main, size: NSSize(width: 1280, height: 820), to: folder.appending(path: "main-dark.png"), dark: true)
+        try await render(main, size: NSSize(width: 1280, height: 820), to: folder.appending(path: "main-light.png"))
+        try await render(main, size: NSSize(width: 1280, height: 820), to: folder.appending(path: "main-dark.png"), dark: true)
 
         // The pages, each in the same window shell.
         func shell(_ content: some View) -> some View {
@@ -77,37 +78,46 @@ final class SnapshotTests: XCTestCase {
         ]
         for (name, item, view) in pages {
             app.sidebar = item
-            try render(shell(view), size: NSSize(width: 1280, height: 900), to: folder.appending(path: "\(name).png"))
+            try await render(shell(view), size: NSSize(width: 1280, height: 900), to: folder.appending(path: "\(name).png"))
         }
         app.sidebar = .home
-        try render(shell(HomeView()), size: NSSize(width: 1280, height: 900),
+        try await render(shell(HomeView()), size: NSSize(width: 1280, height: 900),
                    to: folder.appending(path: "home-dark.png"), dark: true)
+        // Loads the catalogue and one font from Google Fonts.
+        app.sidebar = .fonts
+        let fonts = HStack(spacing: 0) {
+            SidebarView().frame(width: 220)
+            Divider()
+            FontsView()
+        }
+        .environment(app)
+        try await render(fonts, size: NSSize(width: 1280, height: 900), to: folder.appending(path: "fonts.png"))
         app.sidebar = .all
         app.selection = Set(books.prefix(3).map(\.id))
-        try render(shell(LibraryView().overlay(alignment: .bottom) { SelectionBar().padding(.bottom, 44) }),
+        try await render(shell(LibraryView().overlay(alignment: .bottom) { SelectionBar().padding(.bottom, 44) }),
                    size: NSSize(width: 1280, height: 820), to: folder.appending(path: "selection.png"))
-        try render(QuickFind().environment(app), size: NSSize(width: 560, height: 400),
+        try await render(QuickFind().environment(app), size: NSSize(width: 560, height: 400),
                    to: folder.appending(path: "quickfind.png"))
-        try render(FormattingSheet().environment(app), size: NSSize(width: 560, height: 680),
+        try await render(FormattingSheet().environment(app), size: NSSize(width: 560, height: 680),
                    to: folder.appending(path: "formatting.png"))
 
         app.viewMode = .list
         app.selection = Set(books.prefix(3).map(\.id))
-        try render(main, size: NSSize(width: 1280, height: 820), to: folder.appending(path: "list.png"))
+        try await render(main, size: NSSize(width: 1280, height: 820), to: folder.appending(path: "list.png"))
         app.viewMode = .grid
 
         if let first = books.first {
-            try render(MetadataEditor(book: first).environment(app), size: NSSize(width: 640, height: 560),
+            try await render(MetadataEditor(book: first).environment(app), size: NSSize(width: 640, height: 560),
                        to: folder.appending(path: "editor.png"))
         }
         if books.count > 1 {
             let ids = Array(books.prefix(6).map(\.id))
-            try render(BatchEditor(bookIDs: ids, books: Array(books.prefix(6))).environment(app),
+            try await render(BatchEditor(bookIDs: ids, books: Array(books.prefix(6))).environment(app),
                        size: NSSize(width: 600, height: 640), to: folder.appending(path: "batch-editor.png"))
         }
         let proposals = MetadataCleaner.proposals(for: Set(books.map(\.id)), in: app.store.books)
         if !proposals.isEmpty {
-            try render(CleanUpSheet(proposals: proposals).environment(app), size: NSSize(width: 620, height: 600),
+            try await render(CleanUpSheet(proposals: proposals).environment(app), size: NSSize(width: 620, height: 600),
                        to: folder.appending(path: "cleanup.png"))
         }
         // Live search, so this also checks the catalogues respond.
@@ -120,11 +130,11 @@ final class SnapshotTests: XCTestCase {
             if let key = found.candidates.first?.workKey {
                 print("LOOKUP description: \((await MetadataLookup.openLibraryDescription(workKey: key) ?? "none").prefix(80))")
             }
-            try render(LookupSheet(book: first).environment(app), size: NSSize(width: 780, height: 560),
+            try await render(LookupSheet(book: first).environment(app), size: NSSize(width: 780, height: 560),
                        to: folder.appending(path: "lookup.png"))
         }
         app.settings.format.applyFormatting = true
-        try render(SettingsView().environment(app), size: NSSize(width: 520, height: 760),
+        try await render(SettingsView().environment(app), size: NSSize(width: 520, height: 760),
                    to: folder.appending(path: "settings.png"))
         app.settings.format.applyFormatting = false
         // Sends two books to the volume named in NIGHTSTAND_SNAPSHOT_DEVICE and shows the device page. It writes
@@ -136,8 +146,8 @@ final class SnapshotTests: XCTestCase {
                                    options: app.settings.format)
             try await Task.sleep(for: .seconds(1))
             XCTAssertEqual(app.devices.device(device.id)?.manifest.count, 2)
-            try render(main, size: NSSize(width: 1280, height: 820), to: folder.appending(path: "main-device.png"))
-            try render(DeviceView(deviceID: device.id).environment(app), size: NSSize(width: 760, height: 600),
+            try await render(main, size: NSSize(width: 1280, height: 820), to: folder.appending(path: "main-device.png"))
+            try await render(DeviceView(deviceID: device.id).environment(app), size: NSSize(width: 760, height: 600),
                        to: folder.appending(path: "device.png"))
         }
     }

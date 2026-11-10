@@ -147,6 +147,10 @@ struct DeviceView: View {
                     .controlSize(.large)
                     .labelStyle(.iconOnly)
                     .help("Show your library's covers on the Kobo, for books whose cover is missing or wrong there")
+                Button("Fonts", systemImage: "textformat") { withAnimation(.snappy) { app.sidebar = .fonts } }
+                    .controlSize(.large)
+                    .labelStyle(.iconOnly)
+                    .help("Browse fonts and install them on this Kobo")
                 Button("Format…", systemImage: "textformat.size") { app.showFormatting = true }
                     .controlSize(.large)
                     .help("Choose how books look on the device, and re-send them")

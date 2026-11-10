@@ -152,6 +152,8 @@ struct QuickFind: View {
                  symbol: "text.book.closed", keywords: "notes highlights quotes review") { go(.journal) },
             Item(id: "organise", title: "Organise", subtitle: "Every tool for tidying your library",
                  symbol: "wand.and.stars", keywords: "tools tidy bulk batch import") { go(.organise) },
+            Item(id: "fonts", title: "Fonts", subtitle: "Browse, preview and install fonts on your e-reader",
+                 symbol: "textformat", keywords: "google typeface kobo install") { go(.fonts) },
             Item(id: "all", title: "All Books", symbol: "books.vertical", keywords: "library") { go(.all) },
             Item(id: "favourites", title: "Favourites", symbol: "heart") { go(.favourites) },
             Item(id: "cleanup", title: "Clean Up Details…",
