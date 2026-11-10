@@ -222,8 +222,10 @@ struct BookMenu: View {
             Button("No Rating") { app.store.modify(ids) { $0.rating = 0 } }
         }
         Divider()
+        Button(ids.count > 1 ? "Edit Details of \(ids.count) Books…" : "Edit Details…", systemImage: "pencil") {
+            app.edit(ids)
+        }
         if let single {
-            Button("Edit Details…", systemImage: "pencil") { app.editing = single }
             Button("Look Up Details Online…", systemImage: "globe") { app.lookingUp = single }
             Button("Change Cover…", systemImage: "photo") { app.chooseCover(for: single.id) }
         }

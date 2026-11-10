@@ -60,6 +60,11 @@ struct NightstandApp: App {
                     .disabled(app.selection.isEmpty)
             }
             CommandMenu("Library") {
+                Button(app.selection.count > 1 ? "Edit Details of \(app.selection.count) Books…" : "Edit Details…") {
+                    app.edit(app.selection)
+                }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+                .disabled(app.selection.isEmpty)
                 Button(app.selection.count > 1 ? "Clean Up Selected Books…" : "Clean Up Details…") {
                     app.startCleanUp()
                 }

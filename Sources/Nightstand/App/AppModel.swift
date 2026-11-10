@@ -51,6 +51,7 @@ final class AppModel {
     var selection: Set<UUID> = []
     var search = ""
     var editing: Book?
+    var batchEditing: BatchEditSession?
     var lookingUp: Book?
     var cleanUp: CleanUpSession?
     var pendingDelete: Set<UUID> = []
@@ -166,6 +167,18 @@ final class AppModel {
             activity.flash("Nothing to clean up", detail: "Titles, authors and series already look consistent.")
         } else {
             cleanUp = CleanUpSession(proposals: proposals)
+        }
+    }
+
+    /// Opens the editor for one book, or the batch editor when several are given.
+    func edit(_ ids: Set<UUID>) {
+        if ids.count == 1, let id = ids.first {
+            editing = store.book(id)
+        } else if ids.count > 1 {
+            // Keep the order shown in the library, so series numbers follow it.
+            var ordered = visibleBooks.map(\.id).filter { ids.contains($0) }
+            ordered += store.books.map(\.id).filter { ids.contains($0) && !ordered.contains($0) }
+            batchEditing = BatchEditSession(bookIDs: ordered)
         }
     }
 

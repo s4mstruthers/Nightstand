@@ -46,6 +46,9 @@ struct ContentView: View {
         .sheet(item: $app.editing) { book in
             MetadataEditor(book: book)
         }
+        .sheet(item: $app.batchEditing) { session in
+            BatchEditor(bookIDs: session.bookIDs, books: session.bookIDs.compactMap(app.store.book))
+        }
         .sheet(item: $app.lookingUp) { book in
             LookupSheet(book: book)
         }

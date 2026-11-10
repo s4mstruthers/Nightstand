@@ -229,6 +229,58 @@ final class PipelineTests: XCTestCase {
         XCTAssertFalse(Goodreads.matches(entries[1], other))
     }
 
+    func testBatchEditChangesOnlyChosenFields() {
+        func book(_ title: String, series: String? = nil, index: Double? = nil, tags: [String] = []) -> Book {
+            var book = Book(title: title, format: .epub)
+            book.authors = ["Someone"]
+            book.series = series
+            book.seriesIndex = index
+            book.tags = tags
+            book.publisher = "Old Press"
+            return book
+        }
+        let books = [book("One", tags: ["fantasy", "Kindle"]), book("Two", series: "Saga", index: 7),
+                     book("Three", tags: ["kindle"])]
+
+        XCTAssertTrue(BatchEdit().isEmpty)
+        XCTAssertTrue(BatchEdit().apply(to: books).isEmpty)
+
+        var edit = BatchEdit()
+        edit.series = "  The Saga "
+        edit.numbering = .sequential(start: 1)
+        edit.addTags = ["Fantasy", "owned"]
+        edit.removeTags = ["KINDLE"]
+        edit.publisher = ""
+        edit.status = .finished
+        let finished = Date(timeIntervalSince1970: 1_000_000)
+        let changed = edit.apply(to: books, on: finished)
+        XCTAssertEqual(changed.map(\.title), ["One", "Two", "Three"])
+        XCTAssertEqual(changed.map(\.series), ["The Saga", "The Saga", "The Saga"])
+        XCTAssertEqual(changed.map(\.seriesIndex), [1, 2, 3])
+        XCTAssertEqual(changed[0].tags, ["fantasy", "owned"])
+        XCTAssertEqual(changed[1].tags, ["Fantasy", "owned"])
+        XCTAssertEqual(changed[2].tags, ["Fantasy", "owned"])
+        XCTAssertTrue(changed.allSatisfy { $0.publisher == nil && $0.authors == ["Someone"] })
+        XCTAssertTrue(changed.allSatisfy { $0.status == .finished && $0.dateFinished == finished })
+
+        // Numbering only touches books in a series; removing the series removes numbers too.
+        var number = BatchEdit()
+        number.numbering = .sequential(start: 10)
+        XCTAssertEqual(number.apply(to: books).map(\.title), ["Two"])
+        XCTAssertEqual(number.apply(to: books).first?.seriesIndex, 11)
+        var unseries = BatchEdit()
+        unseries.series = ""
+        let removed = unseries.apply(to: books)
+        XCTAssertEqual(removed.map(\.title), ["Two"])
+        XCTAssertNil(removed[0].series)
+        XCTAssertNil(removed[0].seriesIndex)
+
+        var clear = BatchEdit()
+        clear.clearTags = true
+        clear.rating = 4
+        XCTAssertTrue(clear.apply(to: books).allSatisfy { $0.tags.isEmpty && $0.rating == 4 })
+    }
+
     func testCleanerFixesAuthorsAndFindsSeries() {
         XCTAssertEqual(MetadataCleaner.cleanAuthors(["Wong, Tao"]), ["Tao Wong"])
         XCTAssertEqual(MetadataCleaner.cleanAuthors(["Voss, Chris", "Raz, Tahl"]), ["Chris Voss", "Tahl Raz"])

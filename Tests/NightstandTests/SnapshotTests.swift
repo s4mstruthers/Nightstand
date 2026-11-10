@@ -68,6 +68,11 @@ final class SnapshotTests: XCTestCase {
             try render(MetadataEditor(book: first).environment(app), size: NSSize(width: 640, height: 560),
                        to: folder.appending(path: "editor.png"))
         }
+        if books.count > 1 {
+            let ids = Array(books.prefix(6).map(\.id))
+            try render(BatchEditor(bookIDs: ids, books: Array(books.prefix(6))).environment(app),
+                       size: NSSize(width: 600, height: 640), to: folder.appending(path: "batch-editor.png"))
+        }
         let proposals = MetadataCleaner.proposals(for: Set(books.map(\.id)), in: app.store.books)
         if !proposals.isEmpty {
             try render(CleanUpSheet(proposals: proposals).environment(app), size: NSSize(width: 620, height: 600),

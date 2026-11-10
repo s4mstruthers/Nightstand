@@ -276,6 +276,11 @@ private struct MultipleSelectionInspector: View {
                     }
                     .buttonStyle(.borderedProminent)
                 }
+                Button {
+                    app.edit(ids)
+                } label: {
+                    Label("Edit Details…", systemImage: "pencil").frame(maxWidth: .infinity)
+                }
                 Menu {
                     ForEach(ReadingStatus.allCases) { status in
                         Button(status.label, systemImage: status.symbol) { app.store.setStatus(status, for: ids) }
