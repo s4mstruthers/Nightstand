@@ -203,9 +203,12 @@ final class AppModel {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = true
-        panel.message = "Choose books, or folders of books, to add to your library"
+        panel.message = sidebar == .fonts
+            ? "Choose font files (TTF or OTF), or a zip or folder of them, to keep in My Fonts"
+            : "Choose books, or folders of books, to add to your library. Font files and zips go to My Fonts."
         panel.prompt = "Add"
-        panel.allowedContentTypes = Ingest.supportedExtensions.compactMap { UTType(filenameExtension: $0) } + [.folder]
+        panel.allowedContentTypes = (Ingest.supportedExtensions.union(FontLibrary.extensions).union(["zip"]))
+            .compactMap { UTType(filenameExtension: $0) } + [.folder]
         guard panel.runModal() == .OK else { return }
         let urls = panel.urls
         Task { await store.importFiles(urls) }
@@ -582,12 +585,12 @@ final class AppModel {
         pendingDelete = []
     }
 
-    /// Handles files dropped on the window: images set the cover of a single selected book, the rest are imported.
+    /// Handles files dropped on the window: books are imported, and fonts (or zips of them) go to My Fonts.
     func handleDrop(_ urls: [URL]) -> Bool {
         let books = urls.filter { url in
             var isDirectory: ObjCBool = false
             FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
-            return isDirectory.boolValue || Ingest.isBook(url)
+            return isDirectory.boolValue || Ingest.isBook(url) || FontLibrary.isFont(url) || FontLibrary.isArchive(url)
         }
         guard !books.isEmpty else { return false }
         Task { await store.importFiles(books) }

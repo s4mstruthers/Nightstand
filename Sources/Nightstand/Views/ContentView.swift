@@ -139,8 +139,8 @@ struct ContentView: View {
         @Bindable var app = app
 
         ToolbarItem(placement: .navigation) {
-            Button("Add Books", systemImage: "plus") { app.addBooks() }
-                .help("Add books to your library")
+            Button(app.sidebar == .fonts ? "Add Fonts" : "Add Books", systemImage: "plus") { app.addBooks() }
+                .help(app.sidebar == .fonts ? "Add font files, or a zip of them, to My Fonts" : "Add books to your library")
         }
         ToolbarItemGroup(placement: .primaryAction) {
             Button("Find Anything", systemImage: "command") { app.showQuickFind = true }

@@ -240,6 +240,58 @@ enum FontLibrary {
         }
     }
 
+    static func isFont(_ url: URL) -> Bool {
+        extensions.contains(url.pathExtension.lowercased()) && !url.lastPathComponent.hasPrefix(".")
+    }
+
+    /// Copies the font files among `urls` into `folder`: loose files, files inside folders, and files inside
+    /// zip archives (as fonts usually come). Anything else is left alone. Returns the families added.
+    static func importFiles(_ urls: [URL], into folder: URL) throws -> [String] {
+        let fm = FileManager.default
+        let unpacked = fm.temporaryDirectory.appending(path: "Nightstand-fonts-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: unpacked) }
+
+        var files: [URL] = []
+        func collect(_ url: URL) {
+            var isDirectory: ObjCBool = false
+            guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return }
+            if isDirectory.boolValue {
+                let walker = fm.enumerator(at: url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+                while let file = walker?.nextObject() as? URL {
+                    if file.lastPathComponent == "__MACOSX" { walker?.skipDescendants(); continue }
+                    if isFont(file) { files.append(file) } else if isArchive(file) { unzip(file) }
+                }
+            } else if isFont(url) {
+                files.append(url)
+            } else if isArchive(url) {
+                unzip(url)
+            }
+        }
+        func unzip(_ archive: URL) {
+            let destination = unpacked.appending(path: UUID().uuidString)
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+            process.arguments = ["-x", "-k", archive.path, destination.path]
+            guard (try? process.run()) != nil else { return }
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { return }
+            collect(destination)
+        }
+        urls.forEach(collect)
+        guard !files.isEmpty else { return [] }
+
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        for file in files {
+            let destination = folder.appending(path: file.lastPathComponent)
+            try? fm.removeItem(at: destination)
+            try fm.copyContents(of: file, to: destination)
+        }
+        let names = Set(files.map { $0.lastPathComponent })
+        return fonts(in: folder).filter { $0.files.contains { names.contains($0.lastPathComponent) } }.map(\.displayName)
+    }
+
+    static func isArchive(_ url: URL) -> Bool { url.pathExtension.lowercased() == "zip" }
+
     static func remove(_ font: LocalFont) {
         for file in font.files { try? FileManager.default.removeItem(at: file) }
     }

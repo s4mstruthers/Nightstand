@@ -204,10 +204,21 @@ final class LibraryStore {
         }
     }
 
+    /// Bumped whenever fonts are added to My Fonts from outside the Fonts page, so it can reload.
+    private(set) var fontsVersion = 0
+
+    /// Adds books to the library. Font files among them (loose, in folders or in zips) go to My Fonts instead.
     func importFiles(_ urls: [URL]) async {
+        let fontFolder = FontLibrary.folder(in: root)
+        let fonts = await Task.detached { (try? FontLibrary.importFiles(urls, into: fontFolder)) ?? [] }.value
+        if !fonts.isEmpty {
+            fontsVersion += 1
+            activity.flash(fonts.count == 1 ? "Added \(fonts[0]) to My Fonts" : "Added \(fonts.count) fonts to My Fonts",
+                           detail: "Find them on the Fonts page, ready to install on your Kobo.")
+        }
         let files = await Task.detached { Ingest.expand(urls) }.value
         guard !files.isEmpty else {
-            activity.flash("No supported books found")
+            if fonts.isEmpty { activity.flash("No supported books or fonts found") }
             return
         }
         await ingest(files.map { CalibreLibrary.Entry(file: $0, metadata: nil, cover: nil) }, title: "Adding books…")

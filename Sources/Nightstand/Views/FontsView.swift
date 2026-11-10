@@ -54,6 +54,10 @@ struct FontsView: View {
         }
         .task { await load() }
         .onChange(of: app.devices.devices.map(\.id)) { reloadLocal() }
+        .onChange(of: app.store.fontsVersion) {
+            reloadLocal()
+            source = .mine
+        }
         .task(id: choice) { await loadPreview() }
     }
 
@@ -120,7 +124,7 @@ struct FontsView: View {
 
             if source == .mine {
                 Divider()
-                Button("Add Font Files…", systemImage: "plus") { addFiles() }
+                Button("Add Fonts…", systemImage: "plus") { addFiles() }
                     .buttonStyle(.plain)
                     .foregroundStyle(.tint)
                     .padding(10)
@@ -373,17 +377,12 @@ struct FontsView: View {
     private func addFiles() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = [.font]
-        panel.message = "Choose font files (TTF or OTF) to keep in My Fonts"
+        panel.canChooseDirectories = true
+        panel.allowedContentTypes = [.font, .zip, .folder]
+        panel.message = "Choose font files (TTF or OTF), or a zip or folder of them, to keep in My Fonts"
         guard panel.runModal() == .OK else { return }
-        let fm = FileManager.default
-        try? fm.createDirectory(at: libraryFolder, withIntermediateDirectories: true)
-        for url in panel.urls where FontLibrary.extensions.contains(url.pathExtension.lowercased()) {
-            let destination = libraryFolder.appending(path: url.lastPathComponent)
-            try? fm.removeItem(at: destination)
-            try? fm.copyItem(at: url, to: destination)
-        }
-        reloadLocal()
+        let urls = panel.urls
+        Task { await app.store.importFiles(urls) }
     }
 }
 
