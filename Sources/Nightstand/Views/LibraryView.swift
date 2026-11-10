@@ -200,7 +200,15 @@ struct BookCell: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 HStack(spacing: 6) {
-                    if book.rating > 0 { StarRating(rating: .constant(book.rating), size: 9, interactive: false) }
+                    if book.rating > 0 {
+                        StarRating(rating: .constant(book.rating), size: 9, interactive: false)
+                    } else if let community = book.goodreadsRating, community > 0 {
+                        // No rating of your own yet: show what Goodreads readers think, in grey.
+                        Label(String(format: "%.2f", community), systemImage: "person.3.fill")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                            .help("Goodreads rating")
+                    }
                     if book.status == .reading || book.status == .finished {
                         Image(systemName: book.status.symbol)
                             .font(.caption2)
@@ -315,6 +323,10 @@ struct BookMenu: View {
             Button("Look Up Details Online…", systemImage: "globe") { app.lookingUp = single }
             Button("Change Cover…", systemImage: "photo") { app.chooseCover(for: single.id) }
         }
+        Button(ids.count > 1 ? "Get Goodreads Ratings" : "Get Goodreads Rating", systemImage: "person.3") {
+            app.fetchGoodreads(for: ids, onlyMissing: false)
+        }
+        .disabled(app.isFetchingGoodreads)
         Button("Show in Finder", systemImage: "folder") { app.reveal(ids) }
         Button("Export…", systemImage: "square.and.arrow.up") { app.export(ids) }
         Divider()

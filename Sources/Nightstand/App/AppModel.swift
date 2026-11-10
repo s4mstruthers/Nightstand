@@ -142,6 +142,16 @@ final class AppModel {
         }
     }
 
+    /// Whether the book details panel belongs on the current page: always beside a list of books, on Home,
+    /// Discover and Journal only once a book has been picked there, and never on pages that aren't about books.
+    var detailsRelevant: Bool {
+        switch sidebar {
+        case .fonts, .organise, .device: false
+        case .home, .discover, .journal: !selection.isEmpty
+        default: true
+        }
+    }
+
     /// Selects a book and makes sure its details are showing.
     func show(_ book: Book) {
         selection = [book.id]
@@ -293,6 +303,54 @@ final class AppModel {
                            : "Refreshed covers for \(books) book\(books == 1 ? "" : "s") on \(device.name)",
                            detail: books == 0 ? nil : "Eject the Kobo to see them.")
         }
+    }
+
+    // MARK: Goodreads
+
+    private(set) var goodreadsTask: Task<Void, Never>?
+    var isFetchingGoodreads: Bool { goodreadsTask != nil }
+
+    /// Looks books up on Goodreads, one at a time with a pause between, for the community rating and series.
+    /// With `onlyMissing`, books looked up in the last month are skipped. Stops at once if Goodreads refuses.
+    func fetchGoodreads(for ids: Set<UUID>, onlyMissing: Bool = true) {
+        guard goodreadsTask == nil else { return }
+        let month: TimeInterval = 30 * 24 * 3600
+        let books = store.books.filter { ids.contains($0.id) }.filter { book in
+            !onlyMissing || book.goodreadsChecked.map { Date().timeIntervalSince($0) > month } ?? true
+        }
+        guard !books.isEmpty else {
+            activity.flash("Goodreads ratings are up to date")
+            return
+        }
+        goodreadsTask = Task {
+            defer { goodreadsTask = nil }
+            var found = 0, series = 0
+            for (index, book) in books.enumerated() {
+                if Task.isCancelled { break }
+                activity.set("Getting Goodreads ratings…", detail: book.title, progress: Double(index) / Double(books.count))
+                do {
+                    let match = try await GoodreadsLookup.find(title: book.title, authors: book.authors)
+                    let hadSeries = book.series?.isEmpty == false
+                    store.modify([book.id]) { $0.apply(match) }
+                    if match != nil { found += 1 }
+                    if !hadSeries, match?.series != nil { series += 1 }
+                } catch {
+                    activity.flash(found > 0 ? "Got \(found) Goodreads rating\(found == 1 ? "" : "s"), then stopped" : "Couldn't get Goodreads ratings",
+                                   detail: error.localizedDescription)
+                    return
+                }
+                if index < books.count - 1 { try? await Task.sleep(for: .seconds(GoodreadsLookup.pause)) }
+            }
+            var detail: [String] = []
+            if found < books.count { detail.append("\(books.count - found) not found on Goodreads") }
+            if series > 0 { detail.append("\(series) series filled in") }
+            activity.flash("Got Goodreads ratings for \(found) book\(found == 1 ? "" : "s")",
+                           detail: detail.isEmpty ? nil : detail.joined(separator: " · "))
+        }
+    }
+
+    func cancelGoodreads() {
+        goodreadsTask?.cancel()
     }
 
     // MARK: Tidying a Kobo

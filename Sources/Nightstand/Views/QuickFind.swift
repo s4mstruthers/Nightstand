@@ -161,6 +161,10 @@ struct QuickFind: View {
                  keywords: "bulk batch tidy fix metadata rename") { app.startCleanUp(wholeLibrary: true) },
             Item(id: "format", title: "Format Books…", subtitle: "Font size, spacing and layout on your e-reader",
                  symbol: "textformat.size", keywords: "convert css font margin line") { app.showFormatting = true },
+            Item(id: "goodreads-ratings", title: "Get Goodreads Ratings", subtitle: "Community ratings and series for your books",
+                 symbol: "person.3", keywords: "community score stars lookup") {
+                app.fetchGoodreads(for: Set(app.store.books.map(\.id)))
+            },
             Item(id: "add", title: "Add Books…", subtitle: "Add book files or folders", symbol: "plus",
                  keywords: "import open file") { app.addBooks() },
             Item(id: "calibre", title: "Import from Calibre…", symbol: "books.vertical") { app.importCalibre() },

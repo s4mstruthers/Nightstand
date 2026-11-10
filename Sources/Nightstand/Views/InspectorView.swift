@@ -68,6 +68,29 @@ private struct BookInspector: View {
                     }
                 }
 
+                if let text = book.goodreadsText, let goodreadsID = book.goodreadsID {
+                    Button {
+                        if let url = URL(string: "https://www.goodreads.com/book/show/\(goodreadsID)") { NSWorkspace.shared.open(url) }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "person.3.fill").font(.caption2)
+                            Text("Goodreads \(text)")
+                        }
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("What Goodreads readers rate this book. Click to open its Goodreads page.")
+                    .padding(.top, -8)
+                } else if book.goodreadsChecked == nil {
+                    Button("Get Goodreads Rating") { app.fetchGoodreads(for: [id], onlyMissing: false) }
+                        .buttonStyle(.plain)
+                        .font(.callout)
+                        .foregroundStyle(.tint)
+                        .disabled(app.isFetchingGoodreads)
+                        .padding(.top, -8)
+                }
+
                 Picker("Status", selection: Binding {
                     book.status
                 } set: { status in

@@ -52,6 +52,12 @@ struct OrganiseView: View {
                              status: app.settings.format.applyFormatting ? "On" : "Off", button: "Formatting Options…") {
                         app.showFormatting = true
                     }
+                    ToolCard(symbol: "person.3", tint: .brown, title: "Goodreads Ratings",
+                             text: "Looks each book up on Goodreads for what its readers rate it and how many rated it, and fills in missing series. One book at a time, gently, so a whole library takes a minute or two.",
+                             status: "\(books.count { $0.goodreadsRating != nil }) of \(books.count)",
+                             button: app.isFetchingGoodreads ? "Stop" : "Get Ratings") {
+                        if app.isFetchingGoodreads { app.cancelGoodreads() } else { app.fetchGoodreads(for: Set(books.map(\.id))) }
+                    }
                     ToolCard(symbol: "textformat", tint: .mint, title: "Fonts",
                              text: "Browse 1,900 free fonts from Google, see how a page looks in each on an e-reader, and install the ones you like on your Kobo with one click.",
                              status: nil, button: "Browse Fonts") {

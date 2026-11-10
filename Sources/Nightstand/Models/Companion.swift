@@ -19,6 +19,10 @@ struct Recommendation: Identifiable, Codable, Hashable, Sendable {
     var source: String = "assistant"
     var added = Date()
     var state: State = .new
+    /// Filled in from Goodreads when the suggestion is shown.
+    var goodreadsRating: Double?
+    var goodreadsRatings: Int?
+    var goodreadsID: String?
 
     var authorText: String { authors.joined(separator: ", ") }
 }

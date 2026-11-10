@@ -13,7 +13,8 @@ enum MCPServer {
     highlights and wishlist. Start with reading_profile: it gives their taste in their own words, what they \
     loved and disliked and why, what they are reading, and what is already on their wishlist. Use \
     library_summary for an overview, list_books to browse or filter, and get_books for notes, thoughts, \
-    highlights and descriptions. Ratings are 0 to 5 stars, where 0 means not rated.
+    highlights and descriptions. rating is the user's own, 0 to 5 stars, where 0 means not rated; goodreads_rating \
+    is the Goodreads community average, where known.
 
     Recommending: base suggestions on the profile, never suggest a book they own (check list_books) unless it \
     is unread, and do not repeat dismissed suggestions. When they want recommendations kept, call \
@@ -213,6 +214,10 @@ enum MCPServer {
         if let finished = book.dateFinished { json["date_finished"] = day.string(from: finished) }
         if let progress = book.progress, book.status == .reading { json["percent_read"] = Int(progress * 100) }
         if book.isFavourite { json["favourite"] = true }
+        if let community = book.goodreadsRating, community > 0 {
+            json["goodreads_rating"] = community
+            json["goodreads_ratings_count"] = book.goodreadsRatings ?? 0
+        }
         return json
     }
 

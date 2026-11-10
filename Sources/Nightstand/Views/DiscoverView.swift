@@ -9,6 +9,8 @@ struct DiscoverView: View {
     @State private var newTitle = ""
     @State private var newAuthor = ""
     @State private var assistantConnected = false
+    /// Suggestions already looked up on Goodreads this session, found or not.
+    @State private var lookedUp: Set<UUID> = []
 
     var body: some View {
         let books = app.store.books
@@ -85,6 +87,30 @@ struct DiscoverView: View {
                 AssistantConnector.desktopStatus() == .connected || AssistantConnector.codeStatus() == .connected
             }.value
             assistantConnected = connected
+        }
+        .task(id: app.store.companion.recommendations.map(\.id)) { await rateSuggestions() }
+    }
+
+    /// Fills in the Goodreads rating for suggestions and wishlist books that don't have one, gently.
+    private func rateSuggestions() async {
+        let waiting = app.store.companion.recommendations.filter {
+            $0.state != .dismissed && $0.goodreadsRating == nil && !lookedUp.contains($0.id)
+        }
+        for suggestion in waiting.prefix(12) {
+            if Task.isCancelled { return }
+            lookedUp.insert(suggestion.id)
+            guard let match = try? await GoodreadsLookup.find(title: suggestion.title, authors: suggestion.authors) else {
+                // Refused, offline or not found: leave the rest for another time.
+                continue
+            }
+            if let index = app.store.companion.recommendations.firstIndex(where: { $0.id == suggestion.id }) {
+                withAnimation(.snappy) {
+                    app.store.companion.recommendations[index].goodreadsRating = match.rating
+                    app.store.companion.recommendations[index].goodreadsRatings = match.ratings
+                    app.store.companion.recommendations[index].goodreadsID = match.id
+                }
+            }
+            try? await Task.sleep(for: .seconds(GoodreadsLookup.pause))
         }
     }
 
@@ -264,6 +290,13 @@ struct RecommendationCard: View {
                 if !recommendation.authors.isEmpty {
                     Text(recommendation.authorText).font(.callout).foregroundStyle(.secondary)
                 }
+                if let rating = recommendation.goodreadsRating, rating > 0 {
+                    Label(String(format: "Goodreads %.2f", rating) + " · \((recommendation.goodreadsRatings ?? 0).formatted(.number.notation(.compactName))) ratings",
+                          systemImage: "person.3.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .transition(.opacity)
+                }
                 if !recommendation.reason.isEmpty {
                     Text(recommendation.reason)
                         .font(.callout)
@@ -299,6 +332,10 @@ struct RecommendationCard: View {
     }
 
     private func find() {
+        if let id = recommendation.goodreadsID, let url = URL(string: "https://www.goodreads.com/book/show/\(id)") {
+            NSWorkspace.shared.open(url)
+            return
+        }
         var components = URLComponents(string: "https://openlibrary.org/search")!
         components.queryItems = [URLQueryItem(name: "q", value: "\(recommendation.title) \(recommendation.authorText)")]
         if let url = components.url { NSWorkspace.shared.open(url) }

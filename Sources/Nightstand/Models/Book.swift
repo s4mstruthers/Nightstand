@@ -70,6 +70,11 @@ struct Book: Identifiable, Codable, Hashable, Sendable {
     var liked: String?
     var disliked: String?
     var favourite: Bool?
+    /// The community's rating on Goodreads, how many people gave one, and when it was last looked up.
+    var goodreadsRating: Double?
+    var goodreadsRatings: Int?
+    var goodreadsID: String?
+    var goodreadsChecked: Date?
     var dateAdded = Date()
     var dateStarted: Date?
     var dateFinished: Date?
@@ -139,7 +144,7 @@ extension Book {
 }
 
 enum BookSort: String, CaseIterable, Identifiable {
-    case recent, title, author, series, rating
+    case recent, title, author, series, rating, goodreads
 
     var id: String { rawValue }
 
@@ -149,7 +154,8 @@ enum BookSort: String, CaseIterable, Identifiable {
         case .title: "Title"
         case .author: "Author"
         case .series: "Series"
-        case .rating: "Rating"
+        case .rating: "My Rating"
+        case .goodreads: "Goodreads Rating"
         }
     }
 
@@ -171,6 +177,11 @@ enum BookSort: String, CaseIterable, Identifiable {
             return books.sorted(by: Book.seriesOrder)
         case .rating:
             return books.sorted { $0.rating == $1.rating ? byTitle($0, $1) : $0.rating > $1.rating }
+        case .goodreads:
+            return books.sorted {
+                let a = $0.goodreadsRating ?? -1, b = $1.goodreadsRating ?? -1
+                return a == b ? byTitle($0, $1) : a > b
+            }
         }
     }
 }

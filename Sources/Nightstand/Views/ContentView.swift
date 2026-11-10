@@ -38,11 +38,16 @@ struct ContentView: View {
                 .animation(.spring(duration: 0.4, bounce: 0.25), value: app.selection.count > 1)
             }
         }
-        .inspector(isPresented: $app.showInspector) {
+        .inspector(isPresented: Binding {
+            app.showInspector && app.detailsRelevant
+        } set: { shown in
+            // Closing it on a page such as Home just puts the book away.
+            if !shown, !app.showsBooks { app.selection = [] } else { app.showInspector = shown }
+        }) {
             InspectorView()
                 .inspectorColumnWidth(min: 330, ideal: 350, max: 440)
         }
-        .searchable(text: $app.search, placement: .toolbar, prompt: "Search title, author, notes")
+        .searchable(text: $app.search, placement: .toolbar, prompt: "Search your books")
         .toolbar { toolbar }
         .dropDestination(for: URL.self) { urls, _ in
             app.handleDrop(urls)
@@ -93,6 +98,11 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("The book file, your rating and your notes are moved to the Trash.")
+        }
+        .onChange(of: app.sidebar) { old, new in
+            // A book picked on Home, Discover or Journal doesn't follow you to another page.
+            let pages: [SidebarItem?] = [.home, .discover, .journal, .organise, .fonts]
+            if pages.contains(old), pages.contains(new) { app.selection = [] }
         }
         .onChange(of: app.devices.devices.map(\.id)) { _, ids in
             if case .device(let id) = app.sidebar, !ids.contains(id) { app.sidebar = .all }
@@ -155,12 +165,17 @@ struct ContentView: View {
             .help("Sort books")
             }
 
-            SendButton()
-
-            Button("Details", systemImage: "sidebar.trailing") {
-                withAnimation(.snappy) { app.showInspector.toggle() }
+            if app.showsBooks {
+                SendButton()
             }
-            .help("Show or hide book details")
+            if app.detailsRelevant {
+                Button("Details", systemImage: "sidebar.trailing") {
+                    withAnimation(.snappy) {
+                        if app.showsBooks { app.showInspector.toggle() } else { app.selection = [] }
+                    }
+                }
+                .help(app.showsBooks ? "Show or hide book details" : "Close book details")
+            }
         }
     }
 }

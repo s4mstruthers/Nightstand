@@ -447,6 +447,61 @@ final class PipelineTests: XCTestCase {
         print("FONTS: \(catalogue.count) families; Lora files \(files.map { (try? Data(contentsOf: $0).count) ?? 0 })")
     }
 
+    func testGoodreadsLookupPicksTheRightBook() throws {
+        let data = Data(#"""
+            [{"bookId":"110","title":"The Road to Dune","bookTitleBare":"The Road to Dune","avgRating":"3.90",
+              "ratingsCount":6235,"author":{"name":"Frank Herbert"}},
+             {"bookId":"44767458","title":"Dune (Dune, #1)","bookTitleBare":"Dune","avgRating":"4.29",
+              "ratingsCount":1726834,"author":{"name":"Frank Herbert"}},
+             {"bookId":"7","title":"Dune","bookTitleBare":"Dune","avgRating":"4.10","ratingsCount":12,
+              "author":{"name":"Frank Herbert"}},
+             {"bookId":"9","title":"Dune","bookTitleBare":"Dune","avgRating":"2.00","ratingsCount":9000000,
+              "author":{"name":"Someone Else"}}]
+            """#.utf8)
+        let matches = GoodreadsLookup.parse(data)
+        XCTAssertEqual(matches.count, 4)
+        let best = try XCTUnwrap(GoodreadsLookup.best(for: "Dune: Deluxe Edition", authors: ["Frank Herbert"], in: matches))
+        XCTAssertEqual(best.id, "44767458")
+        XCTAssertEqual(best.rating, 4.29)
+        XCTAssertEqual(best.series, "Dune")
+        XCTAssertEqual(best.seriesIndex, 1)
+        XCTAssertNil(GoodreadsLookup.best(for: "Children of Dune", authors: ["Frank Herbert"], in: matches))
+        XCTAssertEqual(GoodreadsLookup.url(title: "Dune: Deluxe Edition").absoluteString,
+                       "https://www.goodreads.com/book/auto_complete?format=json&q=Dune")
+        XCTAssertEqual(GoodreadsLookup.url(title: "We", author: "Zamyatin").absoluteString,
+                       "https://www.goodreads.com/book/auto_complete?format=json&q=We%20Zamyatin")
+        XCTAssertTrue(GoodreadsLookup.parse(Data("<html>challenge</html>".utf8)).isEmpty)
+
+        var book = Book(title: "Dune", format: .epub)
+        book.apply(best)
+        XCTAssertEqual(book.goodreadsText, "4.29 · 1.7M ratings")
+        XCTAssertEqual(book.seriesText, "Dune #1")
+        // A series the reader already set is kept.
+        var mine = Book(title: "Dune", format: .epub)
+        mine.series = "My Dune Shelf"
+        mine.apply(best)
+        XCTAssertEqual(mine.series, "My Dune Shelf")
+        // Not found still records that it was checked.
+        var unknown = Book(title: "Obscure", format: .epub)
+        unknown.apply(nil)
+        XCTAssertNotNil(unknown.goodreadsChecked)
+        XCTAssertNil(unknown.goodreadsText)
+        XCTAssertEqual(BookSort.goodreads.apply([unknown, book]).map(\.title), ["Dune", "Obscure"])
+    }
+
+    /// Looks a few real books up: `NIGHTSTAND_LIVE_GOODREADS=1 swift test --filter LiveGoodreads`.
+    func testLiveGoodreads() async throws {
+        guard ProcessInfo.processInfo.environment["NIGHTSTAND_LIVE_GOODREADS"] != nil else {
+            throw XCTSkip("Set NIGHTSTAND_LIVE_GOODREADS to look books up on Goodreads.")
+        }
+        let books = try LibraryIndex.load(from: LibraryStore.defaultRoot)
+        for book in books.prefix(12) {
+            let match = try await GoodreadsLookup.find(title: book.title, authors: book.authors)
+            print("GOODREADS: \(book.title) | \(book.authorText) -> \(match.map { "\($0.rating) from \($0.ratings), series \($0.series ?? "-") #\($0.seriesIndex ?? 0), id \($0.id)" } ?? "no match")")
+            try await Task.sleep(for: .seconds(GoodreadsLookup.pause))
+        }
+    }
+
     func testBatchEditChangesOnlyChosenFields() {
         func book(_ title: String, series: String? = nil, index: Double? = nil, tags: [String] = []) -> Book {
             var book = Book(title: title, format: .epub)
