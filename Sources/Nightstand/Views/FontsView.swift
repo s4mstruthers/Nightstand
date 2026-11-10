@@ -29,13 +29,19 @@ struct FontsView: View {
     @State private var query = ""
     @State private var mine: [LocalFont] = []
     @State private var onDevice: [LocalFont] = []
-    @State private var choice: Choice?
+    /// The fonts selected in the list. One shows its page preview; several show what can be done to all of them.
+    @State private var selection: Set<Choice> = []
+    @State private var confirmBulkRemove = false
+    @State private var confirmKoboRemove = false
     @State private var previewFont: String?
     @State private var loadingPreview = false
     @State private var busy = false
     @State private var fontSize = 17.0
     @State private var lineSpacing = 1.35
     @State private var justified = true
+
+    /// The single font being previewed, when exactly one is selected.
+    private var choice: Choice? { selection.count == 1 ? selection.first : nil }
 
     private var libraryFolder: URL { FontLibrary.folder(in: app.store.root) }
     private var kobo: ReaderDevice? { app.devices.devices.first { $0.kind == .kobo } }
@@ -58,6 +64,7 @@ struct FontsView: View {
             reloadLocal()
             source = .mine
         }
+        .onChange(of: source) { selection = [] }
         .task(id: choice) { await loadPreview() }
     }
 
@@ -84,7 +91,7 @@ struct FontsView: View {
             .padding(12)
             Divider()
 
-            List(selection: $choice) {
+            List(selection: $selection) {
                 switch source {
                 case .browse:
                     if let catalogueError {
@@ -158,7 +165,9 @@ struct FontsView: View {
 
     @ViewBuilder
     private var detail: some View {
-        if let choice {
+        if selection.count > 1 {
+            bulkPanel
+        } else if let choice {
             ScrollView {
                 VStack(spacing: 22) {
                     VStack(spacing: 4) {
@@ -195,8 +204,146 @@ struct FontsView: View {
             .animation(.snappy, value: previewFont)
         } else {
             ContentUnavailableView("Choose a Font", systemImage: "textformat",
-                                   description: Text("Pick a font to see how a page looks in it on an e-reader."))
+                                   description: Text("Pick a font to see how a page looks in it on an e-reader. ⌘-click or Shift-click to choose several, or ⌘A for all."))
         }
+    }
+
+    // MARK: Several fonts
+
+    private var selected: [Choice] { selection.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending } }
+    private var selectedGoogle: [GoogleFont] { selected.compactMap { if case .google(let f) = $0 { f } else { nil } } }
+    private var selectedLocal: [LocalFont] { selected.compactMap { if case .local(let f) = $0 { f } else { nil } } }
+    private var selectedNames: [String] { selected.map(familyName) }
+
+    private var bulkPanel: some View {
+        let names = selectedNames
+        let notMine = names.filter { !isMine($0) }
+        let notOnKobo = names.filter { !isOnDevice($0) }
+        let onKobo = names.filter(isOnDevice)
+        return ScrollView {
+            VStack(spacing: 22) {
+                VStack(spacing: 4) {
+                    Text("\(selection.count) Fonts Selected").font(.system(size: 28, weight: .bold, design: .serif))
+                    Text(bulkSubtitle(notMine: notMine.count, onKobo: onKobo.count)).foregroundStyle(.secondary)
+                }
+                .padding(.top, 26)
+
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), alignment: .leading)], alignment: .leading, spacing: 10) {
+                    ForEach(selected.prefix(60), id: \.self) { choice in
+                        FontNameLabel(name: choice.title, sample: choice, cache: previewCache.appending(path: "Names"))
+                    }
+                }
+                .frame(maxWidth: 600)
+                if selection.count > 60 {
+                    Text("and \(selection.count - 60) more").foregroundStyle(.secondary)
+                }
+
+                HStack(spacing: 10) {
+                    if busy { ProgressView().controlSize(.small) }
+                    switch source {
+                    case .browse:
+                        if !notMine.isEmpty {
+                            Button("Add \(count(notMine.count)) to My Fonts", systemImage: "plus") {
+                                run { try await saveAll(selectedGoogle.filter { !isMine($0.name) }) }
+                            }
+                        }
+                    case .device:
+                        if !notMine.isEmpty {
+                            Button("Copy \(count(notMine.count)) to My Fonts", systemImage: "plus") {
+                                run {
+                                    for font in selectedLocal where !isMine(font.name) { try FontLibrary.copy(font, to: libraryFolder) }
+                                    app.activity.flash("Copied \(count(notMine.count)) to My Fonts")
+                                }
+                            }
+                        }
+                    case .mine:
+                        EmptyView()
+                    }
+                    if let kobo {
+                        if source != .device, !notOnKobo.isEmpty {
+                            Button("Install \(count(notOnKobo.count)) on \(kobo.name)", systemImage: "arrow.down.to.line") {
+                                run { try await installAll(on: kobo) }
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                        if !onKobo.isEmpty {
+                            Button("Remove \(count(onKobo.count)) from \(kobo.name)", systemImage: "trash", role: .destructive) {
+                                // On the Kobo tab some may have no copy in My Fonts, so ask first.
+                                if source == .device { confirmKoboRemove = true } else { run { removeFromKobo(names: onKobo, kobo: kobo) } }
+                            }
+                        }
+                    }
+                    if source == .mine {
+                        Button("Remove \(count(selection.count)) from My Fonts", systemImage: "trash", role: .destructive) {
+                            confirmBulkRemove = true
+                        }
+                    }
+                }
+                .disabled(busy)
+                if kobo == nil, source != .device {
+                    Text("Plug in your Kobo to install fonts on it.").font(.callout).foregroundStyle(.secondary)
+                }
+                Button("Deselect All") { selection = [] }
+                    .buttonStyle(.link)
+            }
+            .padding(.horizontal, 30)
+            .padding(.bottom, 40)
+            .frame(maxWidth: .infinity)
+        }
+        .confirmationDialog("Remove \(count(selection.count)) from My Fonts?", isPresented: $confirmBulkRemove) {
+            Button("Remove", role: .destructive) {
+                run {
+                    selectedLocal.forEach(FontLibrary.remove)
+                    selection = []
+                }
+            }
+        } message: {
+            Text("Their files are deleted from your library. Fonts already on your Kobo stay there.")
+        }
+        .confirmationDialog("Remove \(count(selection.count)) from \(kobo?.name ?? "your Kobo")?", isPresented: $confirmKoboRemove) {
+            Button("Remove", role: .destructive) {
+                if let kobo { run { removeFromKobo(names: selectedNames, kobo: kobo) } }
+            }
+        } message: {
+            let unsaved = selectedNames.filter { !isMine($0) }.count
+            Text(unsaved == 0 ? "They stay in My Fonts, so you can put them back."
+                 : "\(count(unsaved)) of them \(unsaved == 1 ? "isn't" : "aren't") in My Fonts and will be gone for good. Books set in them will use the Kobo's default font.")
+        }
+    }
+
+    private func count(_ n: Int) -> String { n == 1 ? "1 Font" : "\(n) Fonts" }
+
+    private func bulkSubtitle(notMine: Int, onKobo: Int) -> String {
+        var parts: [String] = []
+        if source == .browse { parts.append("\(selection.count - notMine) in My Fonts") }
+        if kobo != nil { parts.append("\(onKobo) on your Kobo") }
+        return parts.joined(separator: " · ")
+    }
+
+    private func saveAll(_ fonts: [GoogleFont]) async throws {
+        for (index, font) in fonts.enumerated() {
+            app.activity.set("Adding fonts…", detail: font.name, progress: Double(index) / Double(fonts.count))
+            try await save(font)
+        }
+        app.activity.flash("Added \(count(fonts.count)) to My Fonts")
+    }
+
+    private func installAll(on kobo: ReaderDevice) async throws {
+        try await saveAll(selectedGoogle.filter { !isMine($0.name) })
+        reloadLocal()
+        let wanted = Set(selectedNames.filter { !isOnDevice($0) }.map(key))
+        let fonts = mine.filter { wanted.contains(key($0.name)) }
+        for font in fonts { try FontLibrary.copy(font, to: FontLibrary.deviceFolder(on: kobo.url)) }
+        app.activity.flash("Installed \(count(fonts.count)) on \(kobo.name)", detail: "Choose them on the Kobo under Aa › Font Face.")
+    }
+
+    private func removeFromKobo(names: [String], kobo: ReaderDevice) {
+        let keys = Set(names.map(key))
+        let installed = onDevice.filter { keys.contains(key($0.name)) }
+        installed.forEach(FontLibrary.remove)
+        if source == .device { selection = [] }
+        app.activity.flash("Removed \(count(installed.count)) from \(kobo.name)",
+                           detail: "Books set in them will use the Kobo's default font.")
     }
 
     private func slider(_ label: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double,
@@ -240,7 +387,7 @@ struct FontsView: View {
                 Button("Remove from Kobo", systemImage: "trash", role: .destructive) {
                     run {
                         FontLibrary.remove(font)
-                        self.choice = nil
+                        selection = []
                     }
                 }
             case (.local(let font), _):
@@ -257,7 +404,7 @@ struct FontsView: View {
                 Button("Remove", systemImage: "trash", role: .destructive) {
                     run {
                         FontLibrary.remove(font)
-                        self.choice = nil
+                        selection = []
                     }
                 }
             }
@@ -315,7 +462,7 @@ struct FontsView: View {
         if !mine.isEmpty { source = .mine }
         do {
             catalogue = try await GoogleFonts.catalogue(cache: previewCache)
-            if choice == nil, source == .browse { choice = filtered.first.map(Choice.google) }
+            if selection.isEmpty, source == .browse, let first = filtered.first { selection = [.google(first)] }
         } catch {
             catalogueError = error.localizedDescription
         }
