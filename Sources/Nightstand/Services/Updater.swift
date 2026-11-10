@@ -240,10 +240,23 @@ final class Updater {
                 try UpdateInstaller.install(image: image, version: release.version, bundleID: bundleID, over: bundle)
             }.value
             UpdateInstaller.relaunch(bundle)
-            NSApp.terminate(nil)
+            await quitForRelaunch()
         } catch {
             phase = .failed(error.localizedDescription)
         }
+    }
+
+    /// Quits so the relaunch helper can open the new version. macOS ignores a request to quit while a sheet
+    /// is attached to a window, so the sheet is closed first; if quitting still doesn't happen, the library is
+    /// saved and the process exits.
+    private func quitForRelaunch() async {
+        showSheet = false
+        try? await Task.sleep(for: .milliseconds(400))
+        AppDelegate.model?.store.saveNow()
+        NSApp.terminate(nil)
+        try? await Task.sleep(for: .seconds(2))
+        AppDelegate.model?.store.saveNow()
+        exit(0)
     }
 
     private final class ProgressWatch: @unchecked Sendable {

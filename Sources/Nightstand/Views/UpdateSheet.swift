@@ -20,9 +20,9 @@ struct UpdateSheet: View {
                 }
             }
 
-            if let notes = updater.release?.notes, !notes.isEmpty {
+            if let notes = updater.release.map({ UpdateFeed.formatted($0.notes) }), !notes.characters.isEmpty {
                 ScrollView {
-                    Text(UpdateFeed.formatted(notes))
+                    Text(notes)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(12)
