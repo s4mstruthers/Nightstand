@@ -4,6 +4,7 @@ import XCTest
 
 /// Renders the main screens to PNG files for a visual check, without needing the app on screen:
 /// `NIGHTSTAND_LIBRARY=/path/to/library NIGHTSTAND_SNAPSHOTS=/output/folder swift test --filter Snapshot`
+/// Nothing is written to a connected e-reader unless NIGHTSTAND_SNAPSHOT_DEVICE names its volume.
 @MainActor
 final class SnapshotTests: XCTestCase {
     private func render(_ view: some View, size: NSSize, to url: URL, dark: Bool = false) throws {
@@ -59,6 +60,37 @@ final class SnapshotTests: XCTestCase {
         try render(main, size: NSSize(width: 1280, height: 820), to: folder.appending(path: "main-light.png"))
         try render(main, size: NSSize(width: 1280, height: 820), to: folder.appending(path: "main-dark.png"), dark: true)
 
+        // The pages, each in the same window shell.
+        func shell(_ content: some View) -> some View {
+            HStack(spacing: 0) {
+                SidebarView().frame(width: 220)
+                Divider()
+                content.frame(maxWidth: .infinity, maxHeight: .infinity)
+                Divider()
+                InspectorView().frame(width: 350).background(Color(nsColor: .windowBackgroundColor))
+            }
+            .environment(app)
+        }
+        let pages: [(String, SidebarItem, AnyView)] = [
+            ("home", .home, AnyView(HomeView())), ("discover", .discover, AnyView(DiscoverView())),
+            ("journal", .journal, AnyView(JournalView())), ("organise", .organise, AnyView(OrganiseView())),
+        ]
+        for (name, item, view) in pages {
+            app.sidebar = item
+            try render(shell(view), size: NSSize(width: 1280, height: 900), to: folder.appending(path: "\(name).png"))
+        }
+        app.sidebar = .home
+        try render(shell(HomeView()), size: NSSize(width: 1280, height: 900),
+                   to: folder.appending(path: "home-dark.png"), dark: true)
+        app.sidebar = .all
+        app.selection = Set(books.prefix(3).map(\.id))
+        try render(shell(LibraryView().overlay(alignment: .bottom) { SelectionBar().padding(.bottom, 44) }),
+                   size: NSSize(width: 1280, height: 820), to: folder.appending(path: "selection.png"))
+        try render(QuickFind().environment(app), size: NSSize(width: 560, height: 400),
+                   to: folder.appending(path: "quickfind.png"))
+        try render(FormattingSheet().environment(app), size: NSSize(width: 560, height: 680),
+                   to: folder.appending(path: "formatting.png"))
+
         app.viewMode = .list
         app.selection = Set(books.prefix(3).map(\.id))
         try render(main, size: NSSize(width: 1280, height: 820), to: folder.appending(path: "list.png"))
@@ -95,9 +127,11 @@ final class SnapshotTests: XCTestCase {
         try render(SettingsView().environment(app), size: NSSize(width: 520, height: 760),
                    to: folder.appending(path: "settings.png"))
         app.settings.format.applyFormatting = false
-        // With an e-reader (or a disk image posing as one) connected, send two books and show the device page.
+        // Sends two books to the volume named in NIGHTSTAND_SNAPSHOT_DEVICE and shows the device page. It writes
+        // to that device, so it only ever runs against one named on purpose: use a disk image, not a real e-reader.
         try await Task.sleep(for: .seconds(1))
-        if let device = app.devices.devices.first {
+        let deviceName = ProcessInfo.processInfo.environment["NIGHTSTAND_SNAPSHOT_DEVICE"]
+        if let deviceName, let device = app.devices.devices.first(where: { $0.name == deviceName }) {
             await app.devices.send(Array(books.prefix(2)), to: device.id, store: app.store,
                                    options: app.settings.format)
             try await Task.sleep(for: .seconds(1))

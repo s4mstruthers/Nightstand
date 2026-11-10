@@ -60,6 +60,12 @@ struct NightstandApp: App {
                     .disabled(app.selection.isEmpty)
             }
             CommandMenu("Library") {
+                Button("Find Anything…") { app.showQuickFind = true }
+                    .keyboardShortcut("k")
+                Button("Select All Books") { app.selectAll() }
+                    .keyboardShortcut("a", modifiers: [.command, .shift])
+                    .disabled(!app.showsBooks)
+                Divider()
                 Button(app.selection.count > 1 ? "Edit Details of \(app.selection.count) Books…" : "Edit Details…") {
                     app.edit(app.selection)
                 }

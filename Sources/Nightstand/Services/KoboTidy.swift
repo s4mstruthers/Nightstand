@@ -34,9 +34,27 @@ enum KoboTidy {
         var addMissing = true
         var removeLeftovers = true
         var removeDamaged = true
+        /// Take books you've finished off the Kobo. They stay in the library with their progress and highlights.
+        var removeFinished = false
+
+        init() {}
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            func flag(_ key: CodingKeys, _ fallback: Bool) -> Bool {
+                (try? container.decodeIfPresent(Bool.self, forKey: key)) ?? fallback
+            }
+            replaceOthers = flag(.replaceOthers, true)
+            refile = flag(.refile, true)
+            keepPlace = flag(.keepPlace, true)
+            addMissing = flag(.addMissing, true)
+            removeLeftovers = flag(.removeLeftovers, true)
+            removeDamaged = flag(.removeDamaged, true)
+            removeFinished = flag(.removeFinished, false)
+        }
 
         enum CodingKeys: String, CodingKey {
-            case replaceOthers, refile, keepPlace, addMissing, removeLeftovers, removeDamaged
+            case replaceOthers, refile, keepPlace, addMissing, removeLeftovers, removeDamaged, removeFinished
         }
 
         static var saved: Options {
@@ -67,8 +85,18 @@ enum KoboTidy {
         var hasPosition: Bool { (record?.readStatus ?? 0) > 0 || (record?.percentRead ?? 0) > 0 }
     }
 
+    /// A finished book that is still on the Kobo.
+    struct Finished: Identifiable, Sendable {
+        var id: String { path }
+        let bookID: UUID
+        let title: String
+        let path: String
+    }
+
     struct Plan: Sendable {
         var replacements: [Replacement] = []
+        /// Finished books on the device, whoever put them there.
+        var finished: [Finished] = []
         /// Books on the device that aren't in the library yet; they are added to it, then replaced.
         var imports: [String] = []
         /// Leftover files from Calibre and macOS.
@@ -76,7 +104,9 @@ enum KoboTidy {
         /// Book files that can't be opened (an interrupted copy, for example). They are removed.
         var damaged: [String] = []
 
-        var isEmpty: Bool { replacements.isEmpty && imports.isEmpty && junk.isEmpty && damaged.isEmpty }
+        var isEmpty: Bool {
+            replacements.isEmpty && imports.isEmpty && junk.isEmpty && damaged.isEmpty && finished.isEmpty
+        }
     }
 
     static let pendingName = ".nightstand-restore.json"
@@ -117,6 +147,9 @@ enum KoboTidy {
                !claimed.contains(id), !alreadyThere.contains(id), let book = books.first(where: { $0.id == id }) {
                 claimed.insert(id)
                 plan.replacements.append(Replacement(bookID: id, title: book.title, oldPath: file.path, record: record))
+                if book.status == .finished || record?.readStatus == 2 {
+                    plan.finished.append(Finished(bookID: id, title: book.title, path: file.path))
+                }
             } else if Ingest.isBook(deviceRoot.appending(path: file.path)) {
                 plan.imports.append(file.path)
             }
@@ -124,6 +157,9 @@ enum KoboTidy {
         // Nightstand's own copies that aren't where the folder layout would put them.
         for (id, path) in manifest.sorted(by: { $0.value < $1.value }) {
             guard let book = books.first(where: { $0.id == id }) else { continue }
+            if book.status == .finished || byPath[path.lowercased()]?.readStatus == 2 {
+                plan.finished.append(Finished(bookID: id, title: book.title, path: path))
+            }
             let folder = (path as NSString).deletingLastPathComponent
             guard folder.lowercased() != layout.folder(for: book).lowercased() else { continue }
             let record = byPath[path.lowercased()]
@@ -278,41 +314,136 @@ enum KoboTidy {
         return destination
     }
 
-    /// Writes saved positions onto books the Kobo has imported since they were replaced. Positions for books
-    /// not imported yet are kept for next time. Runs in one transaction. Returns how many were restored.
-    static func restore(on root: URL, backupFolder: URL) throws -> (restored: [String], waiting: Int) {
-        var pending = pending(on: root)
-        guard !pending.isEmpty else { return ([], 0) }
-        try backUpDatabase(on: root, to: backupFolder)
-        let db = try KoboDatabase(KoboReading.databaseURL(on: root))
-        let columns = try db.columns(of: "content")
+    /// A book file that moved from one path to another on the device.
+    struct Move: Sendable {
+        let old: String
+        let new: String
+        /// The reading position in the new copy, when it could be found.
+        let bookmark: String?
+    }
 
-        var restored: [String] = []
+    /// Points the Kobo's own records for each moved book at its new file, so the Kobo keeps treating it as the
+    /// same book: progress, reading time, highlights and collections all stay, with nothing to re-import.
+    /// Every place the old id appears (the book, its chapters, bookmarks, shelves, statistics) is renamed, in
+    /// one transaction. Returns the new paths that were carried over; a book the Kobo doesn't know, or already
+    /// knows at its new path, is left for `restore`.
+    static func carryOver(_ moves: [Move], on root: URL) throws -> Set<String> {
+        let prefix = "file:///mnt/onboard/"
+        let db = try KoboDatabase(KoboReading.databaseURL(on: root))
+        func exists(_ id: String) throws -> Bool {
+            var found = false
+            try db.query("SELECT 1 FROM content WHERE ContentID = ? AND ContentType = 6", [.text(id)]) { _ in found = true }
+            return found
+        }
+
+        // Only columns that hold file ids need touching.
+        var columns: [(table: String, column: String)] = []
+        var tables: [String] = []
+        try db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'") { row in
+            if let name = row.text(0) { tables.append(name) }
+        }
+        for table in tables {
+            for column in try db.columns(of: table) {
+                var holdsIDs = false
+                try db.query("SELECT 1 FROM \"\(table)\" WHERE \"\(column)\" LIKE 'file:///mnt/onboard/%' LIMIT 1") { _ in
+                    holdsIDs = true
+                }
+                if holdsIDs { columns.append((table, column)) }
+            }
+        }
+
+        let hasBookmarkColumn = try db.columns(of: "content").contains("ChapterIDBookmarked")
+        var carried: Set<String> = []
         try db.execute("BEGIN IMMEDIATE")
         do {
-            for (path, position) in pending.sorted(by: { $0.key < $1.key }) {
-                var sets: [(String, KoboDatabase.Value)] = [
-                    ("ReadStatus", .int(position.readStatus)),
-                    ("___PercentRead", .int(position.percentRead)),
-                ]
-                if let lastRead = position.lastRead { sets.append(("DateLastRead", .text(lastRead))) }
-                if let seconds = position.secondsReading { sets.append(("TimeSpentReading", .int(seconds))) }
-                if let bookmark = position.bookmark { sets.append(("ChapterIDBookmarked", .text(bookmark))) }
-                if let progress = position.chapterProgress { sets.append(("CurrentChapterProgress", .double(progress))) }
-                if position.readStatus > 0 { sets.append(("FirstTimeReading", .text("false"))) }
-                sets = sets.filter { columns.contains($0.0) }
-                let sql = "UPDATE content SET " + sets.map { "\($0.0) = ?" }.joined(separator: ", ")
-                    + " WHERE ContentID = ? AND ContentType = 6"
-                let changed = try db.execute(sql, sets.map(\.1) + [.text("file:///mnt/onboard/" + path)])
-                if changed > 0 {
-                    restored.append(position.title)
-                    pending[path] = nil
+            for move in moves {
+                let oldID = prefix + move.old, newID = prefix + move.new
+                guard try exists(oldID) else { continue }
+                if oldID != newID {
+                    guard try !exists(newID) else { continue }
+                    let length = oldID.unicodeScalars.count
+                    for (table, column) in columns {
+                        try db.execute(
+                            "UPDATE \"\(table)\" SET \"\(column)\" = ? || substr(\"\(column)\", ?) WHERE substr(\"\(column)\", 1, ?) = ?",
+                            [.text(newID), .int(length + 1), .int(length), .text(oldID)])
+                    }
                 }
+                if let bookmark = move.bookmark, hasBookmarkColumn {
+                    try db.execute("UPDATE content SET ChapterIDBookmarked = ? WHERE ContentID = ? AND ContentType = 6",
+                                   [.text(bookmark), .text(newID)])
+                }
+                carried.insert(move.new)
             }
             try db.execute("COMMIT")
         } catch {
             try? db.execute("ROLLBACK")
             throw error
+        }
+        return carried
+    }
+
+    /// Checks each replaced book once the Kobo has had a chance to import it, and writes the saved position
+    /// back only where the Kobo lost it. A book read since the tidy-up is left alone. Positions for books the
+    /// Kobo hasn't imported yet are kept for next time. Returns the titles that needed restoring.
+    static func restore(on root: URL, backupFolder: URL) throws -> (restored: [String], waiting: Int) {
+        var pending = pending(on: root)
+        guard !pending.isEmpty else { return ([], 0) }
+        let db = try KoboDatabase(KoboReading.databaseURL(on: root))
+        let columns = try db.columns(of: "content")
+        func column(_ name: String) -> String { columns.contains(name) ? name : "NULL" }
+
+        // First see what needs doing, so the database is only written (and backed up) when something does.
+        var repairs: [(path: String, position: Position)] = []
+        for (path, position) in pending.sorted(by: { $0.key < $1.key }) {
+            var found = false, status = 0, percent = 0
+            var lastRead: String?, bookmark: String?
+            try db.query("""
+                SELECT ReadStatus, \(column("___PercentRead")), \(column("DateLastRead")), \(column("ChapterIDBookmarked"))
+                FROM content WHERE ContentID = ? AND ContentType = 6
+                """, [.text("file:///mnt/onboard/" + path)]) { row in
+                found = true
+                status = row.int(0) ?? 0
+                percent = row.int(1) ?? 0
+                lastRead = row.text(2)
+                bookmark = row.text(3)
+            }
+            guard found else { continue }
+            pending[path] = nil
+            // Read on the Kobo since the tidy-up: its position is newer than the saved one.
+            if let now = lastRead.flatMap(KoboReading.parseDate),
+               let then = position.lastRead.flatMap(KoboReading.parseDate), now > then { continue }
+            let intact = status == position.readStatus && percent == position.percentRead
+                && (position.bookmark == nil || bookmark == position.bookmark)
+            if !intact { repairs.append((path, position)) }
+        }
+
+        var restored: [String] = []
+        if !repairs.isEmpty {
+            try backUpDatabase(on: root, to: backupFolder)
+            try db.execute("BEGIN IMMEDIATE")
+            do {
+                for (path, position) in repairs {
+                    var sets: [(String, KoboDatabase.Value)] = [
+                        ("ReadStatus", .int(position.readStatus)),
+                        ("___PercentRead", .int(position.percentRead)),
+                    ]
+                    if let lastRead = position.lastRead { sets.append(("DateLastRead", .text(lastRead))) }
+                    if let seconds = position.secondsReading { sets.append(("TimeSpentReading", .int(seconds))) }
+                    if let bookmark = position.bookmark { sets.append(("ChapterIDBookmarked", .text(bookmark))) }
+                    if let progress = position.chapterProgress { sets.append(("CurrentChapterProgress", .double(progress))) }
+                    if position.readStatus > 0 { sets.append(("FirstTimeReading", .text("false"))) }
+                    sets = sets.filter { columns.contains($0.0) }
+                    let sql = "UPDATE content SET " + sets.map { "\($0.0) = ?" }.joined(separator: ", ")
+                        + " WHERE ContentID = ? AND ContentType = 6"
+                    if try db.execute(sql, sets.map(\.1) + [.text("file:///mnt/onboard/" + path)]) > 0 {
+                        restored.append(position.title)
+                    }
+                }
+                try db.execute("COMMIT")
+            } catch {
+                try? db.execute("ROLLBACK")
+                throw error
+            }
         }
         savePending(pending, on: root)
         return (restored, pending.count)

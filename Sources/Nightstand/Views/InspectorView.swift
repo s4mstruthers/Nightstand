@@ -61,7 +61,12 @@ private struct BookInspector: View {
                 }
                 .textSelection(.enabled)
 
-                StarRating(rating: self.book.rating, size: 22)
+                HStack(spacing: 14) {
+                    StarRating(rating: self.book.rating, size: 22)
+                    FavouriteButton(isOn: book.isFavourite, size: 20) {
+                        app.store.modify([id]) { $0.favourite = $0.isFavourite ? nil : true }
+                    }
+                }
 
                 Picker("Status", selection: Binding {
                     book.status
@@ -88,6 +93,15 @@ private struct BookInspector: View {
                 }
 
                 actions(book)
+
+                section("Your Thoughts") {
+                    VStack(spacing: 8) {
+                        ThoughtField(label: "What I liked", symbol: "hand.thumbsup", tint: .green,
+                                     text: optionalText(\.liked))
+                        ThoughtField(label: "What I didn't", symbol: "hand.thumbsdown", tint: .red,
+                                     text: optionalText(\.disliked))
+                    }
+                }
 
                 section("Notes") {
                     NotesEditor(text: self.book.notes)
@@ -153,6 +167,14 @@ private struct BookInspector: View {
                 .tint(book.status == .finished ? .green : .accentColor)
         }
         .help("From your e-reader")
+    }
+
+    private func optionalText(_ keyPath: WritableKeyPath<Book, String?>) -> Binding<String> {
+        Binding {
+            app.store.book(id)?[keyPath: keyPath] ?? ""
+        } set: { value in
+            app.store.modify([id]) { $0[keyPath: keyPath] = value.isEmpty ? nil : value }
+        }
     }
 
     private func cover(_ book: Book) -> some View {
@@ -286,6 +308,29 @@ private struct HighlightList: View {
                 .foregroundStyle(.tint)
             }
         }
+    }
+}
+
+/// A short labelled field that grows with what's written in it.
+private struct ThoughtField: View {
+    let label: String
+    let symbol: String
+    let tint: Color
+    @Binding var text: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: text.isEmpty ? symbol : symbol + ".fill")
+                .foregroundStyle(text.isEmpty ? AnyShapeStyle(.tertiary) : AnyShapeStyle(tint))
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: 18)
+            TextField(label, text: $text, axis: .vertical)
+                .textFieldStyle(.plain)
+                .lineLimit(1...6)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 }
 

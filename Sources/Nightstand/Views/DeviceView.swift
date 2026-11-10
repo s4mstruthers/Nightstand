@@ -143,6 +143,13 @@ struct DeviceView: View {
                 .controlSize(.large)
                 .disabled(app.syncingDevice != nil)
                 .help("Read progress, reading time and highlights from \(device.name)")
+                Button("Refresh Covers", systemImage: "photo") { app.refreshCovers(on: device.id) }
+                    .controlSize(.large)
+                    .labelStyle(.iconOnly)
+                    .help("Show your library's covers on the Kobo, for books whose cover is missing or wrong there")
+                Button("Format…", systemImage: "textformat.size") { app.showFormatting = true }
+                    .controlSize(.large)
+                    .help("Choose how books look on the device, and re-send them")
                 Button("Tidy Up…", systemImage: "sparkles") { app.startTidyUp(device.id) }
                     .controlSize(.large)
                     .disabled(app.syncingDevice != nil)

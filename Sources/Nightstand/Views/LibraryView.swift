@@ -10,6 +10,9 @@ struct LibraryView: View {
         Group {
             if app.store.books.isEmpty {
                 EmptyLibraryView()
+            } else if books.isEmpty, app.search.trimmingCharacters(in: .whitespaces).isEmpty {
+                ContentUnavailableView("No Books Here", systemImage: "books.vertical",
+                                       description: Text(emptyText))
             } else if books.isEmpty {
                 ContentUnavailableView.search(text: app.search)
             } else if app.viewMode == .grid {
@@ -23,7 +26,32 @@ struct LibraryView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if !app.store.books.isEmpty { statusBar(count: books.count) }
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if case .needs(let issue) = app.sidebar, !books.isEmpty {
+                HStack(spacing: 10) {
+                    Image(systemName: issue.symbol).foregroundStyle(.orange)
+                    Text(issue.advice).font(.callout)
+                    Spacer()
+                    Button("Back to Organise") { withAnimation(.snappy) { app.sidebar = .organise } }
+                        .controlSize(.small)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(.bar)
+                .overlay(alignment: .bottom) { Divider() }
+            }
+        }
         .onDeleteCommand { app.requestDelete(app.selection) }
+        .onExitCommand { withAnimation(.snappy) { app.selection = [] } }
+    }
+
+    private var emptyText: String {
+        switch app.sidebar {
+        case .favourites: "Click the heart on a book you love to keep it here."
+        case .needs: "Nothing needs attention here any more."
+        case .status(let status): "No books are marked \(status.label)."
+        default: "Nothing matches this view."
+        }
     }
 
     private func statusBar(count: Int) -> some View {
@@ -35,6 +63,14 @@ struct LibraryView: View {
                 .foregroundStyle(.secondary)
                 .contentTransition(.numericText())
                 .animation(.snappy, value: app.selection.count)
+            Button(app.selection.count == count && count > 0 ? "Deselect All" : "Select All") {
+                withAnimation(.snappy) {
+                    if app.selection.count == count { app.selection = [] } else { app.selectAll() }
+                }
+            }
+            .buttonStyle(.plain)
+            .font(.callout)
+            .foregroundStyle(.tint)
             Spacer()
             if app.viewMode == .grid {
                 Image(systemName: "square.grid.3x3").font(.caption).foregroundStyle(.tertiary)
@@ -65,7 +101,10 @@ struct LibraryGridView: View {
                 ForEach(books) { book in
                     BookCell(book: book,
                              selected: app.selection.contains(book.id),
-                             onDevice: app.devices.isOnDevice(book.id))
+                             onDevice: app.devices.isOnDevice(book.id),
+                             selecting: !app.selection.isEmpty) {
+                        withAnimation(.snappy(duration: 0.18)) { app.toggle(book) }
+                    }
                         .gesture(TapGesture(count: 2).onEnded { app.open(book) })
                         .simultaneousGesture(TapGesture().onEnded { app.click(book, in: books) })
                         .contextMenu { BookMenu(ids: app.targets(for: book)) }
@@ -88,6 +127,9 @@ struct BookCell: View {
     let book: Book
     let selected: Bool
     let onDevice: Bool
+    /// True while any book is selected, so every cover shows its tick circle.
+    var selecting = false
+    var toggle: () -> Void = {}
     @State private var hovering = false
 
     var body: some View {
@@ -105,6 +147,38 @@ struct BookCell: View {
                             .transition(.scale.combined(with: .opacity))
                     }
                 }
+                .overlay(alignment: .topLeading) {
+                    if hovering || selecting {
+                        Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 20))
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, selected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.black.opacity(0.35)))
+                            .shadow(radius: 2, y: 1)
+                            .contentTransition(.symbolEffect(.replace))
+                            .padding(6)
+                            .contentShape(Rectangle())
+                            .highPriorityGesture(TapGesture().onEnded(toggle))
+                            .help(selected ? "Take out of the selection" : "Add to the selection")
+                            .transition(.scale(scale: 0.6).combined(with: .opacity))
+                    }
+                }
+                .overlay(alignment: .bottomLeading) {
+                    if book.isFavourite {
+                        Image(systemName: "heart.fill")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.pink)
+                            .padding(5)
+                            .background(.regularMaterial, in: Circle())
+                            .padding(6)
+                            .padding(.bottom, book.status == .reading && (book.progress ?? 0) > 0 ? 8 : 0)
+                            .transition(.scale.combined(with: .opacity))
+                    }
+                }
+                .overlay(alignment: .bottom) {
+                    if book.status == .reading, let progress = book.progress, progress > 0 {
+                        CoverProgressBar(progress: progress)
+                    }
+                }
                 .overlay {
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .strokeBorder(Color.accentColor, lineWidth: selected ? 3 : 0)
@@ -114,6 +188,8 @@ struct BookCell: View {
                 .scaleEffect(hovering ? 1.035 : 1)
                 .animation(.spring(duration: 0.3, bounce: 0.35), value: hovering)
                 .animation(.snappy(duration: 0.18), value: selected)
+                .animation(.snappy(duration: 0.18), value: hovering || selecting)
+                .animation(.spring(duration: 0.35, bounce: 0.4), value: book.isFavourite)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(book.title)
@@ -218,6 +294,11 @@ struct BookMenu: View {
             ForEach(ReadingStatus.allCases) { status in
                 Button(status.label, systemImage: status.symbol) { app.store.setStatus(status, for: ids) }
             }
+        }
+        Button(ids.count == 1 && single?.isFavourite == true ? "Remove from Favourites" : "Add to Favourites",
+               systemImage: "heart") {
+            let remove = ids.count == 1 && single?.isFavourite == true
+            app.store.modify(ids) { $0.favourite = remove ? nil : true }
         }
         Menu("Rating") {
             ForEach((1...5).reversed(), id: \.self) { stars in

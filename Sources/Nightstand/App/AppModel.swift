@@ -3,6 +3,9 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum SidebarItem: Hashable {
+    case home, discover, journal, organise
+    case favourites
+    case needs(Insights.Issue)
     case all
     case status(ReadingStatus)
     case series(String)
@@ -47,7 +50,8 @@ final class AppModel {
     let settings = AppSettings()
     let updater: Updater
 
-    var sidebar: SidebarItem? = .all
+    var sidebar: SidebarItem? = .home
+    var showQuickFind = false
     var selection: Set<UUID> = []
     var search = ""
     var editing: Book?
@@ -91,6 +95,7 @@ final class AppModel {
     /// Books replaced on each Kobo whose reading positions are still to be written back, by device id.
     private(set) var pendingRestores: [String: Int] = [:]
     var tidyingUp: KoboTidySession?
+    var showFormatting = false
 
     var koboBackupFolder: URL { store.root.appending(path: "Kobo Backups") }
 
@@ -103,7 +108,9 @@ final class AppModel {
         case .series(let name): books = books.filter { $0.series == name }
         case .author(let name): books = books.filter { $0.authors.contains(name) }
         case .tag(let name): books = books.filter { $0.tags.contains(name) }
-        case .all, .device, nil: break
+        case .favourites: books = books.filter(\.isFavourite)
+        case .needs(let issue): books = books.filter(issue.matches)
+        case .all, .device, .home, .discover, .journal, .organise, nil: break
         }
         let query = search.trimmingCharacters(in: .whitespaces).lowercased()
         if !query.isEmpty { books = books.filter { $0.searchText.contains(query) } }
@@ -116,8 +123,35 @@ final class AppModel {
         case .status(let status): status.label
         case .series(let name), .author(let name), .tag(let name): name
         case .device(let id): devices.device(id)?.name ?? "Device"
+        case .home: "Home"
+        case .discover: "Discover"
+        case .journal: "Journal"
+        case .organise: "Organise"
+        case .favourites: "Favourites"
+        case .needs(let issue): issue.title
         case .all, nil: "All Books"
         }
+    }
+
+    /// True when the main area shows a list of books, as opposed to a page such as Home or a device.
+    var showsBooks: Bool {
+        switch sidebar {
+        case .home, .discover, .journal, .organise, .device: false
+        default: true
+        }
+    }
+
+    /// Selects a book and makes sure its details are showing.
+    func show(_ book: Book) {
+        selection = [book.id]
+        if !showInspector { showInspector = true }
+    }
+
+    /// Goes to the book in the full library.
+    func showInLibrary(_ book: Book) {
+        search = ""
+        sidebar = .all
+        show(book)
     }
 
     /// The books an action on `book` applies to: the whole selection if the book is part of it.
@@ -140,6 +174,16 @@ final class AppModel {
             selection = [book.id]
             anchor = book.id
         }
+    }
+
+    /// Adds a book to the selection, or takes it out, without needing a modifier key.
+    func toggle(_ book: Book) {
+        selection.formSymmetricDifference([book.id])
+        anchor = book.id
+    }
+
+    func selectAll() {
+        selection = Set(visibleBooks.map(\.id))
     }
 
     // MARK: Actions
@@ -178,8 +222,8 @@ final class AppModel {
     }
 
     /// Proposes tidier details for the selected books, or for the whole library when fewer than two are selected.
-    func startCleanUp() {
-        let targets = selection.count > 1 ? selection : Set(store.books.map(\.id))
+    func startCleanUp(wholeLibrary: Bool = false) {
+        let targets = selection.count > 1 && !wholeLibrary ? selection : Set(store.books.map(\.id))
         let proposals = MetadataCleaner.proposals(for: targets, in: store.books)
         if proposals.isEmpty {
             activity.flash("Nothing to clean up", detail: "Titles, authors and series already look consistent.")
@@ -231,6 +275,25 @@ final class AppModel {
         }
     }
 
+    /// Replaces the cover thumbnails a Kobo shows with the library's covers, for books Nightstand sent.
+    /// Book files aren't touched, so reading positions are unaffected.
+    func refreshCovers(on deviceID: String) {
+        guard let device = devices.device(deviceID), device.kind == .kobo else { return }
+        let root = device.url
+        let jobs = device.manifest.compactMap { id, path in
+            store.book(id).flatMap { $0.hasCover ? (path, store.coverURL(for: $0)) : nil }
+        }
+        activity.set("Refreshing covers on \(device.name)…")
+        Task {
+            let books = await Task.detached {
+                jobs.count { KoboCovers.refresh(for: $0.0, cover: $0.1, on: root) > 0 }
+            }.value
+            activity.flash(books == 0 ? "No covers needed refreshing"
+                           : "Refreshed covers for \(books) book\(books == 1 ? "" : "s") on \(device.name)",
+                           detail: books == 0 ? nil : "Eject the Kobo to see them.")
+        }
+    }
+
     // MARK: Tidying a Kobo
 
     func startTidyUp(_ deviceID: String) {
@@ -268,8 +331,23 @@ final class AppModel {
                 await store.importFiles(plan.imports.map { root.appending(path: $0) })
                 plan = await planTidyUp(deviceID) ?? plan
             }
-            plan.replacements = plan.replacements.filter(options.includes)
+            // Finished books come off the device first, so they aren't replaced only to be removed.
+            var removedFinished = 0
             if !options.removeDamaged { plan.damaged = [] }
+            if options.removeFinished {
+                let finished = plan.finished.filter { !options.skipped.contains($0.bookID) }
+                let gone = Set(finished.map(\.bookID))
+                for book in finished {
+                    try? fm.removeItem(at: root.appending(path: book.path))
+                    plan.damaged.append(book.path)  // its folder is checked for emptiness with the others
+                }
+                var manifest = DeviceScanner.readManifest(on: root)
+                for id in gone { manifest[id] = nil }
+                DeviceScanner.writeManifest(manifest, on: root)
+                plan.replacements.removeAll { gone.contains($0.bookID) }
+                removedFinished = finished.count
+            }
+            plan.replacements = plan.replacements.filter(options.includes)
             let removeLeftovers = options.removeLeftovers, keepPlace = options.keepPlace
 
             // 3. Keep the old copies of books that were opened, to find the reading position in them.
@@ -294,10 +372,11 @@ final class AppModel {
             let manifest = DeviceScanner.readManifest(on: root)
             var pending = KoboTidy.pending(on: root)
             var replaced = 0
-            let result: (Int, [String: KoboTidy.Position]) = await Task.detached {
+            let result: (Int, [String: KoboTidy.Position], Int) = await Task.detached {
                 var pending = pending
                 var replaced = 0
                 var folders: Set<String> = []
+                var moves: [KoboTidy.Move] = []
                 for replacement in plan.replacements {
                     // A book that failed to send keeps its old copy.
                     guard let newPath = manifest[replacement.bookID] else { continue }
@@ -310,6 +389,7 @@ final class AppModel {
                                                   chapterProgress: record.chapterProgress)
                             }
                         }
+                        moves.append(KoboTidy.Move(old: replacement.oldPath, new: newPath, bookmark: bookmark))
                         pending[newPath] = KoboTidy.Position(
                             title: replacement.title, readStatus: record.readStatus,
                             percentRead: record.percentRead, lastRead: record.lastReadRaw,
@@ -344,20 +424,28 @@ final class AppModel {
                         folder = (folder as NSString).deletingLastPathComponent
                     }
                 }
+                // Point the Kobo's own records at the new files, so it never sees them as new books. What it
+                // can't carry over waits in `pending` until the Kobo has imported the book.
+                let carried = keepPlace ? ((try? KoboTidy.carryOver(moves, on: root)) ?? []) : []
+                let waiting = pending.keys.filter { !carried.contains($0) }.count
                 KoboTidy.savePending(pending, on: root)
                 // Last, so "._" files made by the writes above go too.
                 for junk in removeLeftovers ? KoboTidy.junkFiles(on: root) : [] {
                     try? fm.removeItem(at: root.appending(path: junk))
                 }
-                return (replaced, pending)
+                return (replaced, pending, waiting)
             }.value
             replaced = result.0
             pending = result.1
-            pendingRestores[deviceID] = pending.count
+            let waiting = result.2
+            pendingRestores[deviceID] = waiting == 0 ? nil : waiting
             devices.refresh()
-            activity.flash("Tidied \(device.name): \(replaced) book\(replaced == 1 ? "" : "s") replaced",
-                           detail: pending.isEmpty ? nil
-                               : "Eject the Kobo and let it finish importing, then plug it back in to restore your places in \(pending.count) book\(pending.count == 1 ? "" : "s").")
+            var summary = ["\(replaced) book\(replaced == 1 ? "" : "s") replaced"]
+            if removedFinished > 0 { summary.append("\(removedFinished) finished removed") }
+            activity.flash("Tidied \(device.name): " + summary.joined(separator: ", "),
+                           detail: waiting > 0
+                               ? "Eject the Kobo and let it finish importing, then plug it back in to restore your places in \(waiting) book\(waiting == 1 ? "" : "s")."
+                               : pending.isEmpty ? nil : "Your reading progress moved with them.")
         } catch {
             activity.flash("Couldn't tidy \(device.name)", detail: error.localizedDescription)
         }
@@ -379,9 +467,11 @@ final class AppModel {
             if !restored.isEmpty {
                 activity.flash("Restored your place in \(restored.count) book\(restored.count == 1 ? "" : "s") on \(device.name)",
                                detail: waiting > 0 ? "\(waiting) still waiting for the Kobo to import them" : nil)
-            } else if !automatic {
+            } else if !automatic, waiting > 0 {
                 activity.flash("The Kobo hasn't imported the new copies yet",
                                detail: "Eject it, wait for it to finish importing, then plug it back in.")
+            } else if !automatic {
+                activity.flash("Your reading positions are all in place")
             }
         } catch {
             activity.flash("Couldn't restore reading positions", detail: error.localizedDescription)

@@ -280,7 +280,8 @@ final class DeviceManager {
             activity.set("Sending to \(device.name)…", detail: book.title,
                          progress: Double(index) / Double(books.count))
             let source = store.fileURL(for: book)
-            let cover = book.customCover ? store.coverURL(for: book) : nil
+            // The library's cover always goes into the file: the one embedded in it can be a placeholder.
+            let cover = book.hasCover ? store.coverURL(for: book) : nil
             let previous = manifest[book.id]
             do {
                 let path = try await Task.detached(priority: .userInitiated) {
@@ -304,6 +305,9 @@ final class DeviceManager {
                                            withIntermediateDirectories: true)
                     try? fm.removeItem(at: destination)
                     try fm.copyItem(at: built, to: destination)
+                    if kind == .kobo, let cover {
+                        KoboCovers.refresh(for: path, cover: cover, on: device.url)
+                    }
                     return path
                 }.value
                 manifest[book.id] = path

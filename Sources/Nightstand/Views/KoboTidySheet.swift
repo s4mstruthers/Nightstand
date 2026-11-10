@@ -114,8 +114,16 @@ struct KoboTidySheet: View {
 
                 Toggle(isOn: $options.keepPlace) {
                     Text("Keep my place in replaced books")
-                    Text("After you eject and reconnect the Kobo, puts you back on the same sentence, with your progress and reading time.")
+                    Text("Your progress, reading time and highlights move with each book, and you stay on the same sentence.")
                 }
+                Toggle(isOn: $options.removeFinished) {
+                    Text("Remove finished books from the Kobo (\(plan.finished.count))")
+                    Text(plan.finished.isEmpty ? "No finished books are on it."
+                         : "They stay in your library with their progress and highlights: "
+                            + plan.finished.map(\.title).joined(separator: ", "))
+                        .lineLimit(3)
+                }
+                .disabled(plan.finished.isEmpty)
             } header: {
                 Text("Books")
             } footer: {
@@ -204,7 +212,7 @@ struct KoboTidySheet: View {
         } description: {
             Text(waiting > 0
                  ? "Now eject your Kobo and wait for it to finish importing. Then plug it back in, and Nightstand will restore your place in \(waiting) book\(waiting == 1 ? "" : "s")."
-                 : "Your Kobo is tidy.")
+                 : "Your Kobo is tidy, and your reading progress moved with your books. Eject it and carry on reading.")
         } actions: {
             if let device = app.devices.device(session.deviceID) {
                 Button("Eject \(device.name)") {
@@ -224,6 +232,7 @@ struct KoboTidySheet: View {
 
     private func hasWork(_ plan: KoboTidy.Plan) -> Bool {
         !chosen(plan).isEmpty
+            || (options.removeFinished && !plan.finished.isEmpty)
             || (options.addMissing && !plan.imports.isEmpty)
             || (options.removeLeftovers && !plan.junk.isEmpty)
             || (options.removeDamaged && !plan.damaged.isEmpty)
@@ -233,7 +242,9 @@ struct KoboTidySheet: View {
         guard hasWork(plan) else { return plan.isEmpty ? "Already tidy." : "Nothing chosen." }
         let books = chosen(plan).count
         var parts: [String] = []
-        if books > 0 { parts.append("\(books) book\(books == 1 ? "" : "s") to replace") }
+        let leaving = options.removeFinished ? plan.finished.count : 0
+        if books > 0 { parts.append("\(max(books - leaving, 0)) book\(books - leaving == 1 ? "" : "s") to replace") }
+        if leaving > 0 { parts.append("\(leaving) finished to remove") }
         if options.removeLeftovers, !plan.junk.isEmpty { parts.append("\(plan.junk.count) files to remove") }
         return parts.joined(separator: " · ")
     }

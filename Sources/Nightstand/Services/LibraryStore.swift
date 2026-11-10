@@ -32,6 +32,16 @@ final class ActivityCenter {
 @MainActor @Observable
 final class LibraryStore {
     private(set) var books: [Book] = []
+    /// The reader's taste notes and wishlist; saved as soon as it changes.
+    var companion = Companion() {
+        didSet {
+            guard companion != oldValue, !loadingCompanion else { return }
+            try? CompanionIndex.save(companion, to: root)
+            companionModification = CompanionIndex.modificationDate(in: root)
+        }
+    }
+    private var loadingCompanion = false
+    private var companionModification: Date?
     let root: URL
     let activity: ActivityCenter
 
@@ -85,10 +95,21 @@ final class LibraryStore {
             try? FileManager.default.copyItem(at: indexURL, to: backup)
         }
         knownModification = LibraryIndex.modificationDate(in: root)
+        loadCompanion()
+    }
+
+    private func loadCompanion() {
+        loadingCompanion = true
+        let loaded = CompanionIndex.load(from: root)
+        if loaded != companion { withAnimation(.snappy) { companion = loaded } }
+        loadingCompanion = false
+        companionModification = CompanionIndex.modificationDate(in: root)
     }
 
     /// Picks up edits made by another process, unless there are local edits still waiting to be saved.
     func reloadIfChanged() {
+        // An assistant may have added recommendations.
+        if CompanionIndex.modificationDate(in: root) != companionModification { loadCompanion() }
         guard !hasUnsavedChanges, LibraryIndex.modificationDate(in: root) != knownModification else { return }
         load()
     }
@@ -240,7 +261,8 @@ final class LibraryStore {
         for (index, book) in selected.enumerated() {
             activity.set("Exporting…", detail: book.title, progress: Double(index) / Double(selected.count))
             let source = fileURL(for: book)
-            let cover = book.customCover ? coverURL(for: book) : nil
+            // The library's cover always goes into the file: it can be better than the one embedded in it.
+            let cover = book.hasCover ? coverURL(for: book) : nil
             do {
                 try await Task.detached {
                     let built = try BookBuilder.build(book: book, source: source, customCover: cover,

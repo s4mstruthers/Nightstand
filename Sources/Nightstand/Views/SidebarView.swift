@@ -9,13 +9,25 @@ struct SidebarView: View {
     var body: some View {
         @Bindable var app = app
         let books = app.store.books
+        let fresh = app.store.companion.recommendations.count { $0.state == .new }
 
         List(selection: $app.sidebar) {
+            Section {
+                Label("Home", systemImage: "house").tag(SidebarItem.home)
+                Label("Discover", systemImage: "sparkles").badge(fresh).tag(SidebarItem.discover)
+                Label("Journal", systemImage: "text.book.closed").tag(SidebarItem.journal)
+                Label("Organise", systemImage: "wand.and.stars").tag(SidebarItem.organise)
+            }
+
             Section("Library") {
                 row("All Books", symbol: "books.vertical", count: books.count, item: .all)
                 ForEach(ReadingStatus.allCases) { status in
                     row(status.label, symbol: status.symbol,
                         count: books.count { $0.status == status }, item: .status(status))
+                }
+                row("Favourites", symbol: "heart", count: books.count(where: \.isFavourite), item: .favourites)
+                if case .needs(let issue) = app.sidebar {
+                    row(issue.title, symbol: issue.symbol, count: books.count(where: issue.matches), item: .needs(issue))
                 }
             }
 
@@ -37,6 +49,26 @@ struct SidebarView: View {
                   values: books.flatMap(\.tags)) { .tag($0) }
         }
         .listStyle(.sidebar)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            Button {
+                app.showQuickFind = true
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                    Text("Find Anything")
+                    Spacer()
+                    Text("⌘K").font(.caption.monospaced()).foregroundStyle(.tertiary)
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(10)
+            .help("Find a book, a page or an action")
+        }
     }
 
     private func row(_ title: String, symbol: String, count: Int, item: SidebarItem) -> some View {

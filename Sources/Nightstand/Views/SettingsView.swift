@@ -16,7 +16,7 @@ struct SettingsView: View {
     }
 }
 
-private struct FormattingSettings: View {
+struct FormattingSettings: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
@@ -45,6 +45,10 @@ private struct FormattingSettings: View {
                         }
                     }
                     Toggle("Ignore fixed font sizes set by the publisher", isOn: $settings.format.normalizeFontSizes)
+                    Toggle(isOn: $settings.format.useReaderFont) {
+                        Text("Use the e-reader's font")
+                        Text("Drops fonts chosen by the publisher, so the font you pick on the device applies everywhere.")
+                    }
                     Toggle("Set line spacing", isOn: $settings.format.overrideLineHeight)
                     if format.overrideLineHeight {
                         LabeledContent("Line spacing") {
@@ -68,6 +72,16 @@ private struct FormattingSettings: View {
                 }
                 Section("Preview") {
                     FormatPreview(format: format)
+                }
+                Section {
+                    TextEditor(text: $settings.format.extraCSS)
+                        .font(.system(.callout, design: .monospaced))
+                        .frame(height: 70)
+                        .scrollContentBackground(.hidden)
+                } header: {
+                    Text("Extra CSS")
+                } footer: {
+                    caption("For anything the options above don't cover. Added to every chapter after the rules above, for example: h2 { text-align: center; }")
                 }
             }
         }

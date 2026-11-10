@@ -1,5 +1,7 @@
 import Foundation
+import ImageIO
 import SQLite3
+import UniformTypeIdentifiers
 
 /// Reading progress, time spent and highlights as a Kobo records them in `.kobo/KoboReader.sqlite`.
 /// Kobo has no public API for this; the database on the device is the source of truth.
@@ -310,5 +312,37 @@ final class KoboDatabase {
         var found = false
         try query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", [.text(table)]) { _ in found = true }
         return found
+    }
+}
+
+/// The cover thumbnails a Kobo keeps for its library screens, in `.kobo-images`.
+///
+/// A Kobo makes these from the cover inside the book when it first imports it, and keeps using them even if
+/// the book file is later replaced. They are plain JPEGs named after the book's id.
+enum KoboCovers {
+    /// The name a Kobo gives a sideloaded book's images: its id with punctuation turned into underscores.
+    static func imageID(for path: String) -> String {
+        String(("file:///mnt/onboard/" + path).map { "/:. ".contains($0) ? "_" : $0 })
+    }
+
+    /// Replaces the thumbnails the Kobo already has for the book at `path` with the given cover, each at the
+    /// size it was. Nothing is created: a book the Kobo hasn't imported gets its cover from the file.
+    /// Returns how many images were replaced.
+    @discardableResult
+    static func refresh(for path: String, cover: URL, on root: URL) -> Int {
+        guard let data = try? Data(contentsOf: cover) else { return 0 }
+        let prefix = imageID(for: path) + " - "
+        let folder = root.appending(path: ".kobo-images")
+        guard let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil) else { return 0 }
+        var replaced = 0
+        for case let url as URL in enumerator where url.lastPathComponent.hasPrefix(prefix) {
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                  let width = properties[kCGImagePropertyPixelWidth] as? Int,
+                  let height = properties[kCGImagePropertyPixelHeight] as? Int,
+                  let image = ImageTools.encode(data, as: .jpeg, maxPixel: max(width, height)) else { continue }
+            if (try? image.write(to: url, options: .atomic)) != nil { replaced += 1 }
+        }
+        return replaced
     }
 }

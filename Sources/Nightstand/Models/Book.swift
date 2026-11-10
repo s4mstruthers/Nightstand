@@ -66,6 +66,10 @@ struct Book: Identifiable, Codable, Hashable, Sendable {
     var rating: Int = 0
     var status: ReadingStatus = .unread
     var notes: String = ""
+    /// What the reader liked and didn't, in their own words. Used for the journal and by AI assistants.
+    var liked: String?
+    var disliked: String?
+    var favourite: Bool?
     var dateAdded = Date()
     var dateStarted: Date?
     var dateFinished: Date?
@@ -98,7 +102,15 @@ struct Book: Identifiable, Codable, Hashable, Sendable {
     }
 
     var searchText: String {
-        ([title, authorText, series ?? "", notes] + tags).joined(separator: " ").lowercased()
+        ([title, authorText, series ?? "", notes, liked ?? "", disliked ?? ""] + tags)
+            .joined(separator: " ").lowercased()
+    }
+
+    var isFavourite: Bool { favourite == true }
+
+    /// True when the reader has written anything about the book.
+    var hasThoughts: Bool {
+        !notes.isEmpty || liked?.isEmpty == false || disliked?.isEmpty == false || highlights?.isEmpty == false
     }
 
     static func formatIndex(_ value: Double) -> String {
@@ -228,6 +240,32 @@ struct FormatOptions: Codable, Equatable, Sendable {
     var paragraphStyle: ParagraphStyle = .publisher
     var removeMargins = false
     var hyphenate = false
+    /// Drops the publisher's fonts, so the font chosen on the e-reader is used throughout.
+    var useReaderFont = false
+    /// Extra rules added after everything else, for anything the options above don't cover.
+    var extraCSS = ""
+
+    init() {}
+
+    /// Options saved by an earlier version lack the newer keys; those take their defaults.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+            (try? container.decodeIfPresent(T.self, forKey: key)) ?? fallback
+        }
+        convertToKepub = value(.convertToKepub, true)
+        applyFormatting = value(.applyFormatting, false)
+        fontScale = value(.fontScale, 100)
+        normalizeFontSizes = value(.normalizeFontSizes, false)
+        overrideLineHeight = value(.overrideLineHeight, false)
+        lineHeight = value(.lineHeight, 1.4)
+        alignment = value(.alignment, .publisher)
+        paragraphStyle = value(.paragraphStyle, .publisher)
+        removeMargins = value(.removeMargins, false)
+        hyphenate = value(.hyphenate, false)
+        useReaderFont = value(.useReaderFont, false)
+        extraCSS = value(.extraCSS, "")
+    }
 
     /// The stylesheet injected into every chapter, or nil when there is nothing to change.
     func css() -> String? {
@@ -262,6 +300,11 @@ struct FormatOptions: Codable, Equatable, Sendable {
         if hyphenate {
             rules.append("p { -webkit-hyphens: auto !important; hyphens: auto !important; adobe-hyphenate: auto; }")
         }
+        if useReaderFont {
+            rules.append("body, p, div, span, li, blockquote, dd, td, a { font-family: inherit !important; }")
+        }
+        let extra = extraCSS.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !extra.isEmpty { rules.append(extra) }
         guard !rules.isEmpty else { return nil }
         return (["/* Added by Nightstand */"] + rules).joined(separator: "\n") + "\n"
     }

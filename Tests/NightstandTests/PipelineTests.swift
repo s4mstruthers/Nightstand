@@ -252,6 +252,7 @@ final class PipelineTests: XCTestCase {
             INSERT INTO Bookmark VALUES ('b2', '0a1b-store', 'x', NULL, NULL, '2026-07-01T10:00:00Z', 'dogear', 'false');
             INSERT INTO Bookmark VALUES ('b3', '0a1b-store', 'x', 'Fear is the mind-killer.', 'Litany', NULL,
                 'highlight', 'false');
+            ALTER TABLE content ADD COLUMN ChapterIDBookmarked TEXT;
             """
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
@@ -286,6 +287,26 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(synced[dune.id]?.progress, 1)
         XCTAssertEqual(synced[dune.id]?.dateFinished, records[1].lastRead)
         XCTAssertNil(synced[other.id])
+
+        // Moving a book's file carries its records along, so the Kobo still knows it; nothing is left to restore.
+        let moved = try KoboTidy.carryOver([KoboTidy.Move(old: "Weir, Andy/Project Hail Mary.kepub.epub",
+                                                          new: "Andy Weir/Project Hail Mary.kepub.epub",
+                                                          bookmark: "ch6.xhtml#kobo.35.1")], on: device)
+        XCTAssertEqual(moved, ["Andy Weir/Project Hail Mary.kepub.epub"])
+        let after = try KoboReading.read(deviceRoot: device)
+        let carried = try XCTUnwrap(after.first { $0.devicePath == "Andy Weir/Project Hail Mary.kepub.epub" })
+        XCTAssertEqual(carried.percentRead, 21)
+        XCTAssertEqual(carried.secondsReading, 13626)
+        XCTAssertEqual(carried.bookmark, "ch6.xhtml#kobo.35.1")
+        XCTAssertEqual(carried.highlights.map(\Highlight.text), ["Amaze, amaze, amaze!" as String?])
+        XCTAssertNil(after.first { $0.devicePath == "Weir, Andy/Project Hail Mary.kepub.epub" })
+        KoboTidy.savePending(["Andy Weir/Project Hail Mary.kepub.epub": KoboTidy.Position(
+            title: "Project Hail Mary", readStatus: 1, percentRead: 21, lastRead: "2026-08-25T05:23:44Z",
+            secondsReading: 13626, chapterProgress: nil, bookmark: "ch6.xhtml#kobo.35.1")], on: device)
+        let check = try KoboTidy.restore(on: device, backupFolder: work.appending(path: "backups"))
+        XCTAssertEqual(check.restored, [])
+        XCTAssertEqual(check.waiting, 0)
+        XCTAssertTrue(KoboTidy.pending(on: device).isEmpty)
 
         // Syncing again changes nothing; a book marked abandoned stays abandoned.
         let again = KoboReading.merge(records, into: changed + [other], manifest: manifest)
@@ -324,6 +345,42 @@ final class PipelineTests: XCTestCase {
         // Without a matching sentence, the same share of the chapter.
         XCTAssertEqual(KoboTidy.relocate("text/ch1.html#kobo.9.9", from: old, to: new, chapterProgress: 0.5),
                        "text/ch1.html#kobo.3.1")
+    }
+
+    func testKoboCoverRefreshKeepsEachThumbnailSize() throws {
+        func jpeg(_ width: Int, _ height: Int, _ color: NSColor) throws -> Data {
+            let image = NSImage(size: NSSize(width: width, height: height))
+            image.lockFocus()
+            color.setFill()
+            NSRect(x: 0, y: 0, width: width, height: height).fill()
+            image.unlockFocus()
+            let rep = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(image.tiffRepresentation)))
+            return try XCTUnwrap(ImageTools.encode(try XCTUnwrap(rep.representation(using: .png, properties: [:])),
+                                                   as: .jpeg, maxPixel: max(width, height)))
+        }
+        func size(_ url: URL) -> Int {
+            NSBitmapImageRep(data: (try? Data(contentsOf: url)) ?? Data()).map { max($0.pixelsWide, $0.pixelsHigh) } ?? 0
+        }
+        let path = "Arthur Koestler/Darkness at Noon - Arthur Koestler.kepub.epub"
+        XCTAssertEqual(KoboCovers.imageID(for: path),
+                       "file____mnt_onboard_Arthur_Koestler_Darkness_at_Noon_-_Arthur_Koestler_kepub_epub")
+        let folder = work.appending(path: ".kobo-images/210/136")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let grid = folder.appending(path: KoboCovers.imageID(for: path) + " - N3_LIBRARY_GRID.parsed")
+        let full = folder.appending(path: KoboCovers.imageID(for: path) + " - N3_FULL.parsed")
+        let other = folder.appending(path: "file____mnt_onboard_Other_epub - N3_FULL.parsed")
+        try jpeg(100, 150, .gray).write(to: grid)
+        try jpeg(400, 600, .gray).write(to: full)
+        try jpeg(400, 600, .gray).write(to: other)
+        let untouched = try Data(contentsOf: other)
+        let cover = work.appending(path: "cover.jpg")
+        try jpeg(800, 1200, .red).write(to: cover)
+
+        XCTAssertEqual(KoboCovers.refresh(for: path, cover: cover, on: work), 2)
+        XCTAssertEqual(size(grid), 150)
+        XCTAssertEqual(size(full), 600)
+        XCTAssertEqual(try Data(contentsOf: other), untouched)
+        XCTAssertEqual(KoboCovers.refresh(for: "Nobody/Unknown.epub", cover: cover, on: work), 0)
     }
 
     func testBatchEditChangesOnlyChosenFields() {
@@ -512,7 +569,7 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(try request("initialize", ["protocolVersion": "2025-06-18"])["protocolVersion"] as? String,
                        "2025-06-18")
         XCTAssertNil(MCPServer.handle(["jsonrpc": "2.0", "method": "notifications/initialized"], root: work))
-        XCTAssertEqual((try request("tools/list")["tools"] as? [[String: Any]])?.count, 4)
+        XCTAssertEqual((try request("tools/list")["tools"] as? [[String: Any]])?.count, 7)
         XCTAssertNotNil(MCPServer.handle(["jsonrpc": "2.0", "id": 2, "method": "nope"], root: work)?["error"])
 
         XCTAssertEqual(try call("library_summary")["total_books"] as? Int, 2)
@@ -545,6 +602,80 @@ final class PipelineTests: XCTestCase {
         // A bad status is reported per book and changes nothing.
         let rejected = try call("update_books", ["updates": [["id": dune.id.uuidString, "status": "burned"]]])
         XCTAssertEqual(rejected["books_changed"] as? Int, 0)
+
+        // Thoughts, taste and recommendations.
+        _ = try call("update_books", ["updates": [["id": dune.id.uuidString, "liked": "The worldbuilding.",
+                                                   "favourite": true]]])
+        _ = try call("update_taste", ["append": "Loves big ideas."])
+        _ = try call("update_taste", ["append": "Avoids love triangles."])
+        let profile = try call("reading_profile")
+        XCTAssertEqual(profile["taste_in_their_words"] as? String, "Loves big ideas.\nAvoids love triangles.")
+        let loved = try XCTUnwrap((profile["loved"] as? [[String: Any]])?.first)
+        XCTAssertEqual(loved["liked"] as? String, "The worldbuilding.")
+        XCTAssertEqual(loved["favourite"] as? Bool, true)
+        XCTAssertEqual((profile["authors_rated_highest"] as? [[String: Any]])?.first?["name"] as? String, "Frank Herbert")
+
+        let suggested = try call("recommend_books", ["recommendations": [
+            ["title": "Hyperion", "authors": ["Dan Simmons"], "reason": "Big ideas, like Dune."],
+            ["title": "dune", "reason": "You own this."],
+        ]])
+        XCTAssertEqual(suggested["added"] as? [String], ["Hyperion"])
+        XCTAssertEqual(suggested["skipped_already_known"] as? [String], ["dune"])
+        var companion = CompanionIndex.load(from: work)
+        XCTAssertEqual(companion.recommendations.map(\.title), ["Hyperion"])
+        XCTAssertEqual(companion.recommendations.first?.state, .new)
+        // A dismissed suggestion isn't offered again.
+        companion.recommendations[0].state = .dismissed
+        try CompanionIndex.save(companion, to: work)
+        let again = try call("recommend_books", ["recommendations": [["title": "Hyperion", "reason": "Again."]]])
+        XCTAssertEqual(again["added"] as? [String], [])
+        XCTAssertEqual((try call("reading_profile")["dismissed_suggestions"] as? [String]), ["Hyperion"])
+    }
+
+    func testInsights() {
+        func book(_ title: String, _ author: String, rating: Int = 0, status: ReadingStatus = .unread,
+                  series: String? = nil, index: Double? = nil, tags: [String] = []) -> Book {
+            var book = Book(title: title, format: .epub)
+            book.authors = [author]
+            book.rating = rating
+            book.status = status
+            book.series = series
+            book.seriesIndex = index
+            book.tags = tags
+            if status == .finished { book.dateFinished = Date() }
+            return book
+        }
+        var first = book("One", "A. Writer", rating: 5, status: .finished, series: "Saga", index: 1, tags: ["Sci-Fi"])
+        first.readingSeconds = 7200
+        let books = [first, book("Two", "A. Writer", series: "Saga", index: 2),
+                     book("Three", "A. Writer", series: "Saga", index: 3),
+                     book("Slog", "B. Other", status: .abandoned, tags: ["Romance"]),
+                     book("Fine", "C. Third", rating: 4, status: .finished, tags: ["Sci-Fi"])]
+
+        let stats = Insights.stats(books)
+        XCTAssertEqual(stats.finishedThisYear, 2)
+        XCTAssertEqual(stats.secondsRead, 7200)
+        XCTAssertEqual(stats.averageRating, 4.5)
+        XCTAssertEqual(Insights.nextInSeries(books).map(\.title), ["Two"])
+        let taste = Insights.taste(books)
+        XCTAssertEqual(taste.lovedAuthors.first?.name, "A. Writer")
+        XCTAssertEqual(taste.lovedTags.map(\.name), ["Sci-Fi"])
+        XCTAssertEqual(taste.coolTags.map(\.name), ["Romance"])
+        XCTAssertEqual(taste.disliked.map(\.title), ["Slog"])
+        XCTAssertTrue(Insights.Issue.unrated.matches(books[0]) == false)
+        XCTAssertEqual(books.filter(Insights.Issue.noThoughts.matches).map(\.title), ["One", "Fine"])
+
+        // Formatting options saved before newer keys existed still load.
+        let old = Data(#"{"applyFormatting":true,"fontScale":120,"convertToKepub":true}"#.utf8)
+        let options = try? JSONDecoder().decode(FormatOptions.self, from: old)
+        XCTAssertEqual(options?.fontScale, 120)
+        XCTAssertEqual(options?.useReaderFont, false)
+        var styled = FormatOptions()
+        styled.applyFormatting = true
+        styled.useReaderFont = true
+        styled.extraCSS = "h2 { text-align: center; }"
+        XCTAssertTrue(styled.css()?.contains("font-family: inherit") == true)
+        XCTAssertTrue(styled.css()?.hasSuffix("h2 { text-align: center; }\n") == true)
     }
 
     @MainActor
