@@ -18,7 +18,7 @@ struct Page<Content: View>: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 30) {
+            VStack(alignment: .leading, spacing: 38) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title)
                         .font(.system(size: 34, weight: .bold, design: .serif))
@@ -49,10 +49,8 @@ struct SectionHeading<Trailing: View>: View {
     @ViewBuilder var trailing: Trailing
 
     var body: some View {
+        // Headings are type alone: an icon beside every one made each page busier without saying more.
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            if let symbol {
-                Image(systemName: symbol).foregroundStyle(.tint).font(.headline)
-            }
             Text(title).font(.system(.title2, design: .serif, weight: .semibold))
             Spacer()
             trailing
@@ -74,18 +72,36 @@ private struct CardModifier: ViewModifier {
     @State private var hovering = false
 
     func body(content: Content) -> some View {
+        // A quiet tinted panel with no outline or shadow, so a page of cards reads as content, not boxes.
         content
             .padding(padding)
-            .background(Color(nsColor: .controlBackgroundColor),
+            .background(Color.primary.opacity(hovering && lifts ? 0.075 : 0.045),
                         in: RoundedRectangle(cornerRadius: Design.cardRadius, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: Design.cardRadius, style: .continuous)
-                    .strokeBorder(.separator.opacity(hovering && lifts ? 0.9 : 0.5))
-            }
-            .shadow(color: .black.opacity(hovering && lifts ? 0.14 : 0.05),
-                    radius: hovering && lifts ? 14 : 4, y: hovering && lifts ? 7 : 2)
-            .scaleEffect(hovering && lifts ? 1.012 : 1)
-            .animation(.spring(duration: 0.3, bounce: 0.3), value: hovering)
+            .scaleEffect(hovering && lifts ? 1.01 : 1)
+            .animation(.smooth(duration: 0.25), value: hovering)
+            .onHover { hovering = $0 }
+    }
+}
+
+/// For cards and covers that are buttons: they sink a little while pressed and spring back on release.
+struct PressableStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .opacity(configuration.isPressed ? 0.85 : 1)
+            .animation(.spring(duration: 0.25, bounce: 0.3), value: configuration.isPressed)
+    }
+}
+
+/// A row in a grouped list that can be clicked: it tints under the pointer.
+private struct RowHover: ViewModifier {
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .background(Color.primary.opacity(hovering ? 0.05 : 0),
+                        in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .animation(.smooth(duration: 0.18), value: hovering)
             .onHover { hovering = $0 }
     }
 }
@@ -96,6 +112,9 @@ extension View {
         modifier(CardModifier(padding: padding, lifts: lifts))
     }
 
+    /// Tints the view under the pointer, for rows that can be clicked.
+    func rowHover() -> some View { modifier(RowHover()) }
+
     /// Fades and slides the view in, a moment after the one before it.
     func staggered(_ index: Int) -> some View {
         modifier(Staggered(index: index))
@@ -105,13 +124,14 @@ extension View {
 private struct Staggered: ViewModifier {
     let index: Int
     @State private var shown = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         content
             .opacity(shown ? 1 : 0)
-            .offset(y: shown ? 0 : 14)
+            .offset(y: shown || reduceMotion ? 0 : 12)
             .onAppear {
-                withAnimation(.spring(duration: 0.5, bounce: 0.2).delay(Double(min(index, 12)) * 0.045)) {
+                withAnimation(.smooth(duration: 0.45).delay(Double(min(index, 8)) * 0.04)) {
                     shown = true
                 }
             }
@@ -156,32 +176,28 @@ struct CoverProgressBar: View {
     }
 }
 
-/// A number with a caption, counting up when it first appears.
-struct StatTile: View {
-    let value: String
-    let label: String
-    let symbol: String
-    var tint: Color = .accentColor
+/// A few numbers with captions, side by side in one panel.
+struct StatStrip: View {
+    let stats: [(value: String, label: String)]
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: symbol)
-                .font(.title2)
-                .foregroundStyle(tint)
-                .frame(width: 40, height: 40)
-                .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            VStack(alignment: .leading, spacing: 0) {
-                Text(value)
-                    .font(.system(.title, design: .rounded, weight: .semibold))
-                    .contentTransition(.numericText())
-                Text(label)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+        HStack(spacing: 0) {
+            ForEach(Array(stats.enumerated()), id: \.offset) { index, stat in
+                if index > 0 { Divider().frame(height: 34) }
+                VStack(spacing: 2) {
+                    Text(stat.value)
+                        .font(.system(.title, design: .rounded, weight: .semibold))
+                        .contentTransition(.numericText())
+                    Text(stat.label)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+                .frame(maxWidth: .infinity)
             }
-            Spacer(minLength: 0)
         }
-        .card(padding: 14)
+        .card(padding: 16)
     }
 }
 

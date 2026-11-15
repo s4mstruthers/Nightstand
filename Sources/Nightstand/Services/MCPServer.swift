@@ -19,7 +19,14 @@ enum MCPServer {
     Recommending: base suggestions on the profile, never suggest a book they own (check list_books) unless it \
     is unread, and do not repeat dismissed suggestions. When they want recommendations kept, call \
     recommend_books: each one appears on the Discover page in Nightstand with your reason, written to them. \
-    When they tell you something lasting about their taste, offer to save it with update_taste.
+    When they ask you to put a book on their wishlist, or agree to it, call add_to_wishlist; otherwise leave \
+    the choice to them on the Discover page; remove_from_wishlist takes books off again, also only when they \
+    ask. When they tell you something lasting about their taste, offer to save it with update_taste.
+
+    Shelves are saved filters in the sidebar, not hand-picked lists: a shelf holds every book that matches its \
+    rules, and books join and leave by themselves. library_summary lists them. Make or change one with \
+    save_shelf and remove one with delete_shelf, when the user asks. For a shelf of particular books, give \
+    those books a tag with update_books first, then save a shelf for that tag.
 
     Organising: use update_books to fix titles and author names, set series and position, tag, rate, change \
     reading status, or record what they liked and disliked about a book. Describe the changes you intend and \
@@ -96,11 +103,11 @@ enum MCPServer {
         var errorDescription: String? { message }
     }
 
-    private static func tool(_ name: String, _ description: String, readOnly: Bool,
+    private static func tool(_ name: String, _ description: String, readOnly: Bool, removes: Bool = false,
                              properties: [String: Any], required: [String] = []) -> [String: Any] {
         ["name": name, "description": description,
          "inputSchema": ["type": "object", "properties": properties, "required": required],
-         "annotations": ["readOnlyHint": readOnly, "destructiveHint": false, "openWorldHint": false]]
+         "annotations": ["readOnlyHint": readOnly, "destructiveHint": removes, "openWorldHint": false]]
     }
 
     static let statuses = ReadingStatus.allCases.map(\.rawValue)
@@ -121,6 +128,32 @@ enum MCPServer {
                         "required": ["title", "reason"],
                     ] as [String: Any]],
                  ], required: ["recommendations"]),
+            tool("add_to_wishlist",
+                 "Put books straight on the user's wishlist in Nightstand: books they want but don't have yet. Only when the user asks for a book to be added, or agrees to it. Each needs a title and should have the authors; note is an optional sentence on why it is there. A suggestion already on the Discover page moves to the wishlist. Books already in the library or on the wishlist are skipped.",
+                 readOnly: false, properties: [
+                    "books": ["type": "array", "items": [
+                        "type": "object",
+                        "properties": ["title": string, "authors": strings, "note": string] as [String: Any],
+                        "required": ["title"],
+                    ] as [String: Any]],
+                 ], required: ["books"]),
+            tool("remove_from_wishlist",
+                 "Take books off the user's wishlist in Nightstand, by title. Only when the user asks. The books are not suggested again afterwards.",
+                 readOnly: false, removes: true, properties: ["titles": strings], required: ["titles"]),
+            tool("save_shelf",
+                 "Make a shelf in Nightstand's sidebar, or change the one with that name. A shelf is a saved filter: it shows every book matching all the rules given, and updates by itself. Include at least one rule. When changing a shelf, pass every rule it should have: rules left out are cleared. Use rename_to to rename. Only when the user asks.",
+                 readOnly: false, properties: [
+                    "name": string,
+                    "rename_to": ["type": "string", "description": "A new name for an existing shelf."],
+                    "search": ["type": "string", "description": "Words that must all appear in the title, author, series, tags or notes."],
+                    "status": ["type": "string", "enum": statuses, "description": "unread means on the to-read list."],
+                    "min_rating": ["type": "integer", "minimum": 1, "maximum": 5, "description": "The user's own rating, at least this many stars."],
+                    "tag": ["type": "string", "description": "Exact tag."],
+                    "favourites_only": ["type": "boolean"],
+                 ], required: ["name"]),
+            tool("delete_shelf",
+                 "Remove a shelf from Nightstand's sidebar, by name. Only the saved filter goes: no books are deleted or changed. Only when the user asks.",
+                 readOnly: false, removes: true, properties: ["name": string], required: ["name"]),
             tool("update_taste",
                  "Save what the user says about their reading taste, in their words. Pass append to add a sentence to their description, or taste to replace it all. Only with the user's agreement.",
                  readOnly: false, properties: [
@@ -183,8 +216,15 @@ enum MCPServer {
         switch name {
         case "reading_profile": return profile(books, CompanionIndex.load(from: root))
         case "recommend_books": return try recommend(books, arguments, root: root)
+        case "add_to_wishlist": return try addToWishlist(books, arguments, root: root)
+        case "remove_from_wishlist": return try removeFromWishlist(arguments, root: root)
+        case "save_shelf": return try saveShelf(books, arguments, root: root)
+        case "delete_shelf": return try deleteShelf(arguments, root: root)
         case "update_taste": return try updateTaste(arguments, root: root)
-        case "library_summary": return summary(books)
+        case "library_summary":
+            var json = summary(books)
+            json["shelves"] = CompanionIndex.load(from: root).shelves.map { shelf($0, books) }
+            return json
         case "list_books": return list(books, arguments)
         case "get_books":
             let ids = Set((arguments["ids"] as? [String] ?? []).prefix(25).map { $0.uppercased() })
@@ -335,6 +375,152 @@ enum MCPServer {
         return ["added": added.map(\.title),
                 "skipped_already_known": suggestions.map(\.title).filter { !addedTitles.contains($0) },
                 "where": "They now appear under Discover in Nightstand."]
+    }
+
+    /// Adds books to the wishlist, or moves a suggestion there. A book the user once dismissed can come back,
+    /// since they have now asked for it.
+    static func addToWishlist(_ books: [Book], _ arguments: [String: Any], root: URL) throws -> [String: Any] {
+        guard let items = arguments["books"] as? [[String: Any]], !items.isEmpty else {
+            throw ToolError(message: "Pass a non-empty books array.")
+        }
+        var companion = CompanionIndex.load(from: root)
+        let owned = Set(books.map { Insights.normalize($0.title) })
+        var added: [String] = [], inLibrary: [String] = [], alreadyThere: [String] = []
+        for item in items {
+            guard let title = (item["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !title.isEmpty else { continue }
+            let key = Insights.normalize(title)
+            let note = (item["note"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if owned.contains(key) {
+                inLibrary.append(title)
+            } else if let index = companion.recommendations.firstIndex(where: { Insights.normalize($0.title) == key }) {
+                if companion.recommendations[index].state == .saved {
+                    alreadyThere.append(title)
+                } else {
+                    companion.recommendations[index].state = .saved
+                    if companion.recommendations[index].reason.isEmpty { companion.recommendations[index].reason = note }
+                    added.append(title)
+                }
+            } else {
+                companion.recommendations.insert(
+                    Recommendation(title: title, authors: item["authors"] as? [String] ?? [], reason: note, state: .saved),
+                    at: 0)
+                added.append(title)
+            }
+        }
+        if !added.isEmpty {
+            do {
+                try CompanionIndex.save(companion, to: root)
+            } catch {
+                throw ToolError(message: "The wishlist could not be saved: \(error.localizedDescription)")
+            }
+        }
+        return ["added": added, "skipped_in_library": inLibrary, "skipped_already_on_wishlist": alreadyThere,
+                "where": "They now appear under Wishlist on the Discover page in Nightstand."]
+    }
+
+    /// Takes books off the wishlist. They are kept as dismissed, so they aren't suggested again.
+    static func removeFromWishlist(_ arguments: [String: Any], root: URL) throws -> [String: Any] {
+        guard let titles = arguments["titles"] as? [String], !titles.isEmpty else {
+            throw ToolError(message: "Pass a non-empty titles array.")
+        }
+        var companion = CompanionIndex.load(from: root)
+        var removed: [String] = [], missing: [String] = []
+        for title in titles {
+            let key = Insights.normalize(title)
+            if let index = companion.recommendations.firstIndex(where: {
+                $0.state == .saved && Insights.normalize($0.title) == key
+            }) {
+                companion.recommendations[index].state = .dismissed
+                removed.append(companion.recommendations[index].title)
+            } else {
+                missing.append(title)
+            }
+        }
+        if !removed.isEmpty { try save(companion, to: root, what: "wishlist") }
+        return ["removed": removed, "not_on_wishlist": missing]
+    }
+
+    // MARK: Shelves
+
+    /// A shelf as the assistant sees it: its rules and how many books it holds now.
+    static func shelf(_ shelf: Shelf, _ books: [Book]) -> [String: Any] {
+        var json: [String: Any] = ["name": shelf.name, "books": books.count(where: shelf.matches)]
+        if !shelf.search.isEmpty { json["search"] = shelf.search }
+        if let status = shelf.status { json["status"] = status.rawValue }
+        if shelf.minimumRating > 0 { json["min_rating"] = shelf.minimumRating }
+        if let tag = shelf.tag { json["tag"] = tag }
+        if shelf.favouritesOnly { json["favourites_only"] = true }
+        return json
+    }
+
+    private static func shelfIndex(_ name: String, in companion: Companion) -> Int? {
+        let key = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return companion.shelves.firstIndex { $0.name.lowercased() == key }
+    }
+
+    private static func save(_ companion: Companion, to root: URL, what: String) throws {
+        do {
+            try CompanionIndex.save(companion, to: root)
+        } catch {
+            throw ToolError(message: "The \(what) could not be saved: \(error.localizedDescription)")
+        }
+    }
+
+    static func saveShelf(_ books: [Book], _ arguments: [String: Any], root: URL) throws -> [String: Any] {
+        guard let name = (arguments["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !name.isEmpty else { throw ToolError(message: "Pass a name for the shelf.") }
+        var companion = CompanionIndex.load(from: root)
+        let existing = shelfIndex(name, in: companion)
+        var shelf = existing.map { companion.shelves[$0] } ?? Shelf(name: name)
+
+        if let renamed = (arguments["rename_to"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !renamed.isEmpty {
+            guard existing != nil else { throw ToolError(message: "There is no shelf called “\(name)” to rename.") }
+            if let clash = shelfIndex(renamed, in: companion), clash != existing {
+                throw ToolError(message: "There is already a shelf called “\(renamed)”.")
+            }
+            shelf.name = renamed
+        }
+        shelf.search = (arguments["search"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if let status = arguments["status"] as? String {
+            guard let value = ReadingStatus(rawValue: status) else {
+                throw ToolError(message: "status must be one of: \(statuses.joined(separator: ", ")).")
+            }
+            shelf.status = value
+        } else {
+            shelf.status = nil
+        }
+        shelf.minimumRating = min(5, max(0, (arguments["min_rating"] as? NSNumber)?.intValue ?? 0))
+        let tag = (arguments["tag"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        shelf.tag = tag?.isEmpty == false ? tag : nil
+        shelf.favouritesOnly = arguments["favourites_only"] as? Bool ?? false
+
+        guard !shelf.search.isEmpty || shelf.status != nil || shelf.minimumRating > 0 || shelf.tag != nil
+                || shelf.favouritesOnly else {
+            throw ToolError(message: "Give the shelf at least one rule: search, status, min_rating, tag or favourites_only. Without one it would hold every book.")
+        }
+        if let existing { companion.shelves[existing] = shelf } else { companion.shelves.append(shelf) }
+        try save(companion, to: root, what: "shelf")
+
+        var json = self.shelf(shelf, books)
+        json["result"] = existing == nil ? "created" : "updated"
+        if let tag = shelf.tag, !books.contains(where: { $0.tags.contains(tag) }) {
+            json["note"] = "No book has the tag “\(tag)” yet. Tags are matched exactly."
+        }
+        return json
+    }
+
+    static func deleteShelf(_ arguments: [String: Any], root: URL) throws -> [String: Any] {
+        var companion = CompanionIndex.load(from: root)
+        guard let name = arguments["name"] as? String, let index = shelfIndex(name, in: companion) else {
+            let names = companion.shelves.map(\.name)
+            throw ToolError(message: names.isEmpty ? "There are no shelves."
+                            : "No shelf has that name. The shelves are: \(names.joined(separator: ", ")).")
+        }
+        let removed = companion.shelves.remove(at: index)
+        try save(companion, to: root, what: "shelves")
+        return ["deleted": removed.name, "note": "No books were changed."]
     }
 
     static func updateTaste(_ arguments: [String: Any], root: URL) throws -> [String: Any] {

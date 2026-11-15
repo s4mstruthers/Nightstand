@@ -143,21 +143,21 @@ struct DeviceView: View {
                 .controlSize(.large)
                 .disabled(app.syncingDevice != nil)
                 .help("Read progress, reading time and highlights from \(device.name)")
-                Button("Refresh Covers", systemImage: "photo") { app.refreshCovers(on: device.id) }
-                    .controlSize(.large)
-                    .labelStyle(.iconOnly)
-                    .help("Show your library's covers on the Kobo, for books whose cover is missing or wrong there")
-                Button("Fonts", systemImage: "textformat") { withAnimation(.snappy) { app.sidebar = .fonts } }
-                    .controlSize(.large)
-                    .labelStyle(.iconOnly)
-                    .help("Browse fonts and install them on this Kobo")
-                Button("Format…", systemImage: "textformat.size") { app.showFormatting = true }
-                    .controlSize(.large)
-                    .help("Choose how books look on the device, and re-send them")
-                Button("Tidy Up…", systemImage: "sparkles") { app.startTidyUp(device.id) }
-                    .controlSize(.large)
-                    .disabled(app.syncingDevice != nil)
-                    .help("Replace books put on the Kobo by Calibre or other apps with Nightstand's copies")
+                Menu {
+                    Button("Refresh Covers", systemImage: "photo") { app.refreshCovers(on: device.id) }
+                    Button("Tidy Up…", systemImage: "sparkles") { app.startTidyUp(device.id) }
+                        .disabled(app.syncingDevice != nil)
+                    Divider()
+                    Button("Formatting…", systemImage: "textformat.size") { app.showFormatting = true }
+                    Button("Fonts", systemImage: "textformat") { withAnimation(.snappy) { app.sidebar = .fonts } }
+                } label: {
+                    Label("More", systemImage: "ellipsis")
+                }
+                .labelStyle(.iconOnly)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .controlSize(.large)
+                .help("Covers, tidying, formatting and fonts for this Kobo")
             }
             Button("Eject", systemImage: "eject") { app.devices.eject(device) }
                 .controlSize(.large)

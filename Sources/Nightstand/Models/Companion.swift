@@ -85,8 +85,15 @@ struct Companion: Codable, Equatable, Sendable {
     /// Books to finish this year; nil when no goal is set.
     var yearlyGoal: Int?
     var shelves: [Shelf] = []
+    /// Books taken off a Needs Attention list without doing what it asks, by the list's name.
+    var skipped: [String: Set<UUID>] = [:]
 
     init() {}
+
+    /// True if the book is on that Needs Attention list: it has the gap, and the reader hasn't skipped it.
+    func needs(_ issue: Insights.Issue, _ book: Book) -> Bool {
+        issue.matches(book) && skipped[issue.rawValue]?.contains(book.id) != true
+    }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -94,6 +101,7 @@ struct Companion: Codable, Equatable, Sendable {
         recommendations = try container.decodeIfPresent([Recommendation].self, forKey: .recommendations) ?? []
         yearlyGoal = try container.decodeIfPresent(Int.self, forKey: .yearlyGoal)
         shelves = (try? container.decodeIfPresent([Shelf].self, forKey: .shelves)) ?? []
+        skipped = (try? container.decodeIfPresent([String: Set<UUID>].self, forKey: .skipped)) ?? [:]
     }
 
     /// Adds suggestions, skipping ones already listed or already in the library. Returns those added.

@@ -29,11 +29,11 @@ struct SidebarView: View {
                 }
                 row("Favourites", symbol: "heart", count: books.count(where: \.isFavourite), item: .favourites)
                 if case .needs(let issue) = app.sidebar {
-                    row(issue.title, symbol: issue.symbol, count: books.count(where: issue.matches), item: .needs(issue))
+                    row(issue.title, symbol: issue.symbol, count: books.count { app.store.companion.needs(issue, $0) }, item: .needs(issue))
                 }
             }
 
-            Section("Shelves") {
+            Section {
                 ForEach(app.store.companion.shelves) { shelf in
                     row(shelf.name, symbol: "line.3.horizontal.decrease.circle", count: books.count(where: shelf.matches),
                         item: .shelf(shelf.id))
@@ -47,14 +47,29 @@ struct SidebarView: View {
                             }
                         }
                 }
-                Button {
-                    app.editingShelf = Shelf(name: "")
-                } label: {
-                    Label("New Shelf…", systemImage: "plus")
-                        .foregroundStyle(.secondary)
+                if app.store.companion.shelves.isEmpty {
+                    Button {
+                        app.editingShelf = Shelf(name: "")
+                    } label: {
+                        Label("New Shelf…", systemImage: "plus")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Save a filter, such as unread sci-fi or five-star books, as a shelf in the sidebar")
                 }
-                .buttonStyle(.plain)
-                .help("Save a filter, such as unread sci-fi or five-star books, as a shelf in the sidebar")
+            } header: {
+                // Once there are shelves, adding another is a small plus beside the heading, as in Reminders.
+                HStack {
+                    Text("Shelves")
+                    Spacer()
+                    if !app.store.companion.shelves.isEmpty {
+                        Button("New Shelf", systemImage: "plus") { app.editingShelf = Shelf(name: "") }
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .help("Save a filter, such as unread sci-fi or five-star books, as a shelf")
+                    }
+                }
             }
 
             if !app.devices.devices.isEmpty {

@@ -165,9 +165,6 @@ struct ContentView: View {
                 .help(app.sidebar == .fonts ? "Add font files, or a zip of them, to My Fonts" : "Add books to your library")
         }
         ToolbarItemGroup(placement: .primaryAction) {
-            Button("Find Anything", systemImage: "command") { app.showQuickFind = true }
-                .help("Find a book, page or action (⌘K)")
-
             if app.showsBooks {
             Picker("View", selection: $app.viewMode) {
                 Label("Covers", systemImage: "square.grid.2x2").tag(ViewMode.grid)
@@ -187,7 +184,8 @@ struct ContentView: View {
             .help("Sort books")
             }
 
-            if app.showsBooks {
+            // Only while an e-reader is plugged in: a button that can't do anything is just noise.
+            if app.showsBooks, !app.devices.devices.isEmpty {
                 SendButton()
             }
             if app.detailsRelevant {

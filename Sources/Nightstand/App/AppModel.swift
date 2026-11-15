@@ -120,7 +120,7 @@ final class AppModel {
         case .author(let name): books = books.filter { $0.authors.contains(name) }
         case .tag(let name): books = books.filter { $0.tags.contains(name) }
         case .favourites: books = books.filter(\.isFavourite)
-        case .needs(let issue): books = books.filter(issue.matches)
+        case .needs(let issue): books = books.filter { store.companion.needs(issue, $0) }
         case .shelf(let id):
             if let shelf = store.companion.shelves.first(where: { $0.id == id }) { books = books.filter(shelf.matches) }
         case .all, .device, .home, .discover, .browse, .journal, .organise, .fonts, nil: break
@@ -129,6 +129,19 @@ final class AppModel {
         if !query.isEmpty { books = books.filter { $0.searchText.contains(query) } }
         if case .series = sidebar { return BookSort.series.apply(books) }
         return sort.apply(books)
+    }
+
+    /// Takes books off a Needs Attention list without doing what it asks. They stay off until restored.
+    func skip(_ ids: Set<UUID>, for issue: Insights.Issue) {
+        withAnimation(.snappy) {
+            store.companion.skipped[issue.rawValue, default: []].formUnion(ids)
+            selection.subtract(ids)
+        }
+    }
+
+    /// Puts every skipped book back on that list, if it still has the gap.
+    func restoreSkipped(for issue: Insights.Issue) {
+        withAnimation(.snappy) { store.companion.skipped[issue.rawValue] = nil }
     }
 
     var title: String {

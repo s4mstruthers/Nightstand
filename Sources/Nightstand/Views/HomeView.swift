@@ -10,7 +10,7 @@ struct HomeView: View {
         let stats = Insights.stats(books)
         let reading = books.filter { $0.status == .reading }
             .sorted { ($0.lastRead ?? $0.dateStarted ?? .distantPast) > ($1.lastRead ?? $1.dateStarted ?? .distantPast) }
-        let unrated = books.filter(Insights.Issue.unrated.matches)
+        let unrated = books.filter { app.store.companion.needs(.unrated, $0) }
             .sorted { ($0.dateFinished ?? .distantPast) > ($1.dateFinished ?? .distantPast) }
         let fresh = app.store.companion.recommendations.filter { $0.state == .new }
         let upNext = Insights.nextInSeries(books)
@@ -34,16 +34,10 @@ struct HomeView: View {
                 }
 
                 section("Your Reading", symbol: "chart.bar", index: 1) {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), spacing: 14)], spacing: 14) {
-                        StatTile(value: "\(stats.finishedThisYear)", label: "finished this year",
-                                 symbol: "checkmark.circle", tint: .green)
-                        StatTile(value: hours(stats.secondsRead), label: "spent reading",
-                                 symbol: "clock", tint: .orange)
-                        StatTile(value: stats.averageRating.map { String(format: "%.1f", $0) } ?? "–",
-                                 label: "average rating", symbol: "star", tint: .yellow)
-                        StatTile(value: "\(stats.toRead)", label: "waiting to be read",
-                                 symbol: "bookmark", tint: .accentColor)
-                    }
+                    StatStrip(stats: [("\(stats.finishedThisYear)", "finished this year"),
+                                      (hours(stats.secondsRead), "spent reading"),
+                                      (stats.averageRating.map { String(format: "%.1f", $0) } ?? "–", "average rating"),
+                                      ("\(stats.toRead)", "to read")])
                 }
 
                 if !unrated.isEmpty {
@@ -67,7 +61,7 @@ struct HomeView: View {
                 if !quotes.isEmpty {
                     section("Lately Highlighted", symbol: "highlighter", index: 4, more: ("Journal", .journal)) {
                         VStack(spacing: 10) {
-                            ForEach(quotes, id: \.highlight.id) { entry in
+                            ForEach(quotes.prefix(1), id: \.highlight.id) { entry in
                                 QuoteCard(book: entry.book, highlight: entry.highlight)
                             }
                         }
@@ -91,16 +85,19 @@ struct HomeView: View {
 
     private func section(_ title: String, symbol: String, index: Int, more: (String, SidebarItem)? = nil,
                          @ViewBuilder content: () -> some View) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             SectionHeading(title: title, symbol: symbol) {
                 if let more {
                     Button {
                         withAnimation(.snappy) { app.sidebar = more.1 }
                     } label: {
-                        Label(more.0, systemImage: "chevron.right").labelStyle(.titleAndIcon)
+                        HStack(spacing: 3) {
+                            Text(more.0)
+                            Image(systemName: "chevron.right").font(.caption.weight(.semibold))
+                        }
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(.tint)
+                    .foregroundStyle(.secondary)
                 }
             }
             content()
@@ -191,7 +188,7 @@ struct ReadingCard: View {
             .frame(height: 93)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableStyle())
         .card(padding: 14, lifts: true)
         .contextMenu { BookMenu(ids: [book.id]) }
     }
@@ -227,7 +224,7 @@ struct ShelfBook: View {
             }
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableStyle())
         .animation(.spring(duration: 0.3, bounce: 0.35), value: hovering)
         .onHover { hovering = $0 }
         .contextMenu { BookMenu(ids: [book.id]) }
@@ -250,10 +247,14 @@ private struct RateRow: View {
             StarRating(rating: Binding { book.rating } set: { stars in
                 withAnimation(.snappy) { app.store.modify([book.id]) { $0.rating = stars } }
             }, size: 20)
-            Button("Add Thoughts") { app.show(book) }
-                .controlSize(.small)
         }
+        .contentShape(Rectangle())
+        .onTapGesture { app.show(book) }
+        .help("Click the book to add your thoughts")
         .card(padding: 12)
+        .contextMenu {
+            Button("Don't Ask About This Book", systemImage: "eye.slash") { app.skip([book.id], for: .unrated) }
+        }
         .transition(.asymmetric(insertion: .opacity, removal: .scale(scale: 0.9).combined(with: .opacity)))
     }
 }
@@ -288,7 +289,7 @@ struct QuoteCard: View {
             }
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableStyle())
         .card(lifts: true)
     }
 }
@@ -305,20 +306,17 @@ private struct TidyNudge: View {
                 HStack(spacing: 14) {
                     Image(systemName: "wand.and.stars")
                         .font(.title2)
-                        .foregroundStyle(.purple)
-                        .frame(width: 40, height: 40)
-                        .background(Color.purple.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .foregroundStyle(.tint)
+                        .frame(width: 32)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("\(suggestions) book\(suggestions == 1 ? "" : "s") could have tidier details")
                             .font(.callout.weight(.medium))
-                        Text("Nightstand can fix author names, trim long titles and spot series. You check every change first.")
+                        Text("Author names, long titles and missed series. You check every change first.")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button("Review") { app.startCleanUp(wholeLibrary: true) }
-                        .buttonStyle(.borderedProminent)
-                    Button("Organise") { withAnimation(.snappy) { app.sidebar = .organise } }
                 }
                 .card()
                 .transition(.opacity)

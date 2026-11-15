@@ -1042,7 +1042,7 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(try request("initialize", ["protocolVersion": "2025-06-18"])["protocolVersion"] as? String,
                        "2025-06-18")
         XCTAssertNil(MCPServer.handle(["jsonrpc": "2.0", "method": "notifications/initialized"], root: work))
-        XCTAssertEqual((try request("tools/list")["tools"] as? [[String: Any]])?.count, 7)
+        XCTAssertEqual((try request("tools/list")["tools"] as? [[String: Any]])?.count, 11)
         XCTAssertNotNil(MCPServer.handle(["jsonrpc": "2.0", "id": 2, "method": "nope"], root: work)?["error"])
 
         XCTAssertEqual(try call("library_summary")["total_books"] as? Int, 2)
@@ -1103,6 +1103,47 @@ final class PipelineTests: XCTestCase {
         let again = try call("recommend_books", ["recommendations": [["title": "Hyperion", "reason": "Again."]]])
         XCTAssertEqual(again["added"] as? [String], [])
         XCTAssertEqual((try call("reading_profile")["dismissed_suggestions"] as? [String]), ["Hyperion"])
+
+        // Straight onto the wishlist: new books go on, owned ones don't, and asking twice adds nothing.
+        let wished = try call("add_to_wishlist", ["books": [
+            ["title": "The Fall of Hyperion", "authors": ["Dan Simmons"], "note": "The sequel."],
+            ["title": "Hyperion"], ["title": "Dune"],
+        ]])
+        XCTAssertEqual(wished["added"] as? [String], ["The Fall of Hyperion", "Hyperion"])
+        XCTAssertEqual(wished["skipped_in_library"] as? [String], ["Dune"])
+        companion = CompanionIndex.load(from: work)
+        XCTAssertEqual(companion.recommendations.filter { $0.state == .saved }.map(\.title).sorted(),
+                       ["Hyperion", "The Fall of Hyperion"])
+        XCTAssertEqual(companion.recommendations.count, 2)
+        let twice = try call("add_to_wishlist", ["books": [["title": "hyperion"]]])
+        XCTAssertEqual(twice["added"] as? [String], [])
+        XCTAssertEqual(twice["skipped_already_on_wishlist"] as? [String], ["hyperion"])
+
+        // Off the wishlist again, and not offered afterwards.
+        let unwished = try call("remove_from_wishlist", ["titles": ["HYPERION", "Nothing Like It"]])
+        XCTAssertEqual(unwished["removed"] as? [String], ["Hyperion"])
+        XCTAssertEqual(unwished["not_on_wishlist"] as? [String], ["Nothing Like It"])
+        companion = CompanionIndex.load(from: work)
+        XCTAssertEqual(companion.recommendations.filter { $0.state == .saved }.map(\.title), ["The Fall of Hyperion"])
+        XCTAssertEqual(companion.recommendations.first { $0.title == "Hyperion" }?.state, .dismissed)
+
+        // Shelves: made, listed with their count, changed, renamed and removed. One with no rules is refused.
+        let made = try call("save_shelf", ["name": "Loved", "min_rating": 5, "favourites_only": true])
+        XCTAssertEqual(made["result"] as? String, "created")
+        let all = try XCTUnwrap(MCPServer.call("library_summary", [:], root: work)["shelves"] as? [[String: Any]])
+        XCTAssertEqual(all.first?["name"] as? String, "Loved")
+        XCTAssertEqual(all.first?["books"] as? Int, made["books"] as? Int)
+        let changed = try call("save_shelf", ["name": "loved", "rename_to": "Finished", "status": "finished"])
+        XCTAssertEqual(changed["result"] as? String, "updated")
+        companion = CompanionIndex.load(from: work)
+        XCTAssertEqual(companion.shelves.map(\.name), ["Finished"])
+        XCTAssertEqual(companion.shelves.first?.status, .finished)
+        XCTAssertEqual(companion.shelves.first?.minimumRating, 0)
+        XCTAssertEqual(companion.shelves.first?.favouritesOnly, false)
+        XCTAssertThrowsError(try MCPServer.call("save_shelf", ["name": "Everything"], root: work))
+        XCTAssertThrowsError(try MCPServer.call("delete_shelf", ["name": "Nope"], root: work))
+        XCTAssertEqual(try call("delete_shelf", ["name": "finished"])["deleted"] as? String, "Finished")
+        XCTAssertTrue(CompanionIndex.load(from: work).shelves.isEmpty)
     }
 
     func testInsights() throws {

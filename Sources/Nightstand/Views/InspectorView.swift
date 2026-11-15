@@ -41,7 +41,7 @@ private struct BookInspector: View {
         let book = book.wrappedValue
 
         ScrollView {
-            VStack(spacing: 18) {
+            VStack(spacing: 20) {
                 cover(book)
 
                 VStack(spacing: 4) {
@@ -125,11 +125,9 @@ private struct BookInspector: View {
                                      text: optionalText(\.liked))
                         ThoughtField(label: "What I didn't", symbol: "hand.thumbsdown", tint: .red,
                                      text: optionalText(\.disliked))
+                        ThoughtField(label: "Notes, quotes, who recommended it…", symbol: "note.text", tint: .accentColor,
+                                     text: self.book.notes, fills: false, lines: 2...30)
                     }
-                }
-
-                section("Notes") {
-                    NotesEditor(text: self.book.notes)
                 }
 
                 if let summary = book.summary, !summary.isEmpty {
@@ -357,44 +355,23 @@ private struct ThoughtField: View {
     let symbol: String
     let tint: Color
     @Binding var text: String
+    /// Whether the symbol has a filled form to switch to once something is written.
+    var fills = true
+    var lines = 1...6
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: text.isEmpty ? symbol : symbol + ".fill")
+            Image(systemName: text.isEmpty || !fills ? symbol : symbol + ".fill")
                 .foregroundStyle(text.isEmpty ? AnyShapeStyle(.tertiary) : AnyShapeStyle(tint))
                 .contentTransition(.symbolEffect(.replace))
                 .frame(width: 18)
             TextField(label, text: $text, axis: .vertical)
                 .textFieldStyle(.plain)
-                .lineLimit(1...6)
+                .lineLimit(lines)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-    }
-}
-
-private struct NotesEditor: View {
-    @Binding var text: String
-
-    var body: some View {
-        TextEditor(text: $text)
-            .font(.body)
-            .scrollContentBackground(.hidden)
-            .scrollDisabled(true)
-            .frame(minHeight: 110)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(8)
-            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .overlay(alignment: .topLeading) {
-                if text.isEmpty {
-                    Text("Your thoughts, favourite quotes, who recommended it…")
-                        .foregroundStyle(.tertiary)
-                        .padding(.horizontal, 13)
-                        .padding(.vertical, 8)
-                        .allowsHitTesting(false)
-                }
-            }
     }
 }
 
@@ -420,43 +397,23 @@ private struct MultipleSelectionInspector: View {
             Text("\(ids.count) books selected")
                 .font(.system(.title3, design: .serif, weight: .semibold))
 
-            VStack(spacing: 8) {
-                ForEach(app.devices.devices) { device in
-                    Button {
-                        app.send(ids, to: device.id)
-                    } label: {
-                        Label("Send to \(device.name)", systemImage: "arrow.up.forward.app")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-                Button {
-                    app.edit(ids)
-                } label: {
-                    Label("Edit Details…", systemImage: "pencil").frame(maxWidth: .infinity)
-                }
-                Menu {
-                    ForEach(ReadingStatus.allCases) { status in
-                        Button(status.label, systemImage: status.symbol) { app.store.setStatus(status, for: ids) }
-                    }
-                } label: {
-                    Label("Set Status", systemImage: "bookmark").frame(maxWidth: .infinity)
-                }
-                Button {
-                    app.export(ids)
-                } label: {
-                    Label("Export…", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
-                }
-                Button(role: .destructive) {
-                    app.requestDelete(ids)
-                } label: {
-                    Label("Delete…", systemImage: "trash").frame(maxWidth: .infinity)
-                }
-            }
-            .controlSize(.large)
+            // What you can do with them is in the bar under the books, so it isn't repeated here.
+            Text(summary(books))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
             Spacer()
         }
         .padding(18)
         .padding(.top, 20)
+    }
+
+    /// "3 authors · 12 MB"
+    private func summary(_ books: [Book]) -> String {
+        let authors = Set(books.flatMap(\.authors)).count
+        let size = books.reduce(Int64(0)) { $0 + ($1.hasFile ? $1.fileSize : 0) }
+        var parts = ["\(authors) author\(authors == 1 ? "" : "s")"]
+        if size > 0 { parts.append(ByteCountFormatter.string(fromByteCount: size, countStyle: .file)) }
+        return parts.joined(separator: " · ")
     }
 }

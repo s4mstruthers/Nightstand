@@ -289,7 +289,7 @@ struct SeriesGapsSection: View {
                         }
                     }
                     Text(stopped ? "Goodreads isn't answering just now, so some titles are missing. They'll fill in another time."
-                         : "Titles and covers from Goodreads. Books you add to the library come off the wishlist by themselves.")
+                         : "Titles and covers from Goodreads.")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
@@ -365,7 +365,8 @@ private struct GapCard: View {
                         .help("You've read it: add it to your library as read, without a file")
                 }
                 .labelStyle(.iconOnly)
-                .controlSize(.small)
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
             case .owned:
                 Label("Owned", systemImage: "checkmark.circle.fill").font(.caption2).foregroundStyle(.green)
             case .none:
@@ -376,7 +377,8 @@ private struct GapCard: View {
                         .help("You've read it: add it to your library as read, without a file")
                 }
                 .labelStyle(.iconOnly)
-                .controlSize(.small)
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
             }
         }
         .frame(width: 92, alignment: .leading)

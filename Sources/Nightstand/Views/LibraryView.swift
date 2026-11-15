@@ -44,6 +44,12 @@ struct LibraryView: View {
                         .controlSize(.small)
                         .buttonStyle(.borderedProminent)
                     }
+                    let chosen = app.selection.intersection(books.map(\.id))
+                    Button(chosen.isEmpty ? "Skip All" : "Skip \(chosen.count) Selected") {
+                        app.skip(chosen.isEmpty ? Set(books.map(\.id)) : chosen, for: issue)
+                    }
+                    .controlSize(.small)
+                    .help("Take them off this list without changing them. You can bring them back from Organise.")
                     Button("Back to Organise") { withAnimation(.snappy) { app.sidebar = .organise } }
                         .controlSize(.small)
                 }
@@ -74,14 +80,17 @@ struct LibraryView: View {
                 .foregroundStyle(.secondary)
                 .contentTransition(.numericText())
                 .animation(.snappy, value: app.selection.count)
-            Button(app.selection.count == count && count > 0 ? "Deselect All" : "Select All") {
-                withAnimation(.snappy) {
-                    if app.selection.count == count { app.selection = [] } else { app.selectAll() }
+            if app.selection.count > 1 {
+                Button(app.selection.count == count ? "Deselect All" : "Select All") {
+                    withAnimation(.snappy) {
+                        if app.selection.count == count { app.selection = [] } else { app.selectAll() }
+                    }
                 }
+                .buttonStyle(.plain)
+                .font(.callout)
+                .foregroundStyle(.tint)
+                .transition(.opacity)
             }
-            .buttonStyle(.plain)
-            .font(.callout)
-            .foregroundStyle(.tint)
             Spacer()
             if !app.search.trimmingCharacters(in: .whitespaces).isEmpty {
                 Button("Save as Shelf") {
@@ -129,7 +138,7 @@ struct LibraryGridView: View {
                         BookCell(book: book,
                                  selected: app.selection.contains(book.id),
                                  onDevice: app.devices.isOnDevice(book.id),
-                                 selecting: !app.selection.isEmpty)
+                                 selecting: app.selection.count > 1)
                             // One handler for single clicks, so a click on the tick circle can't also count as a
                             // click on the cover (which used to undo the tick straight away).
                             .simultaneousGesture(SpatialTapGesture().onEnded { tap in
@@ -167,7 +176,7 @@ struct BookCell: View {
     let book: Book
     let selected: Bool
     let onDevice: Bool
-    /// True while any book is selected, so every cover shows its tick circle.
+    /// True while several books are selected, so every cover shows its tick circle.
     var selecting = false
     @State private var hovering = false
 
@@ -224,8 +233,8 @@ struct BookCell: View {
                         .strokeBorder(Color.accentColor, lineWidth: selected ? 3 : 0)
                         .padding(-4)
                 }
-                .shadow(color: .black.opacity(hovering ? 0.32 : 0.2), radius: hovering ? 14 : 6, y: hovering ? 9 : 4)
-                .scaleEffect(hovering ? 1.035 : 1)
+                .shadow(color: .black.opacity(hovering ? 0.26 : 0.14), radius: hovering ? 14 : 5, y: hovering ? 8 : 3)
+                .scaleEffect(hovering ? 1.03 : 1)
                 .animation(.spring(duration: 0.3, bounce: 0.35), value: hovering)
                 .animation(.snappy(duration: 0.18), value: selected)
                 .animation(.snappy(duration: 0.18), value: hovering || selecting)
@@ -245,21 +254,20 @@ struct BookCell: View {
                     } else if let community = book.goodreadsRating, community > 0 {
                         // No rating of your own yet: show what Goodreads readers think, in grey and named, so it
                         // isn't mistaken for a rating of your own.
-                        Text("Goodreads " + String(format: "%.1f", community))
+                        Label(String(format: "%.1f", community), systemImage: "person.2.fill")
+                            .labelStyle(.titleAndIcon)
+                            .imageScale(.small)
                             .font(.caption2.monospacedDigit())
                             .foregroundStyle(.tertiary)
                             .lineLimit(1)
                             .help("The Goodreads readers' average. You haven't rated this book yet.")
                     }
-                    if book.status == .reading || book.status == .finished {
+                    // Progress is the bar on the cover, so only a finished book gets a mark here.
+                    if book.status == .finished {
                         Image(systemName: book.status.symbol)
                             .font(.caption2)
-                            .foregroundStyle(book.status == .finished ? Color.green : Color.accentColor)
-                    }
-                    if book.status == .reading, let progress = book.progress, progress > 0 {
-                        Text("\(Int(progress * 100))%")
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.green)
+                            .help("Finished")
                     }
                     if !book.hasFile {
                         Text("No file")
@@ -346,6 +354,11 @@ struct BookMenu: View {
         }
         ForEach(app.devices.devices) { device in
             Button("Send to \(device.name)", systemImage: "arrow.up.forward.app") { app.send(ids, to: device.id) }
+        }
+        if case .needs(let issue) = app.sidebar {
+            Button(ids.count > 1 ? "Skip These \(ids.count) Books" : "Skip This Book", systemImage: "eye.slash") {
+                app.skip(ids, for: issue)
+            }
         }
         Divider()
         Menu("Status") {

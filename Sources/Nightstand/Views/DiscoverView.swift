@@ -24,7 +24,7 @@ struct DiscoverView: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 SectionHeading(title: "Suggested for You", symbol: "sparkles") {
-                    if !fresh.isEmpty { Pill(text: "\(fresh.count) new", tint: .pink) }
+                    if !fresh.isEmpty { Text("\(fresh.count) new").foregroundStyle(.secondary) }
                 }
                 if fresh.isEmpty {
                     askAssistant
@@ -62,7 +62,7 @@ struct DiscoverView: View {
                 }
                 if adding { addForm }
                 if saved.isEmpty, !adding {
-                    Text("Books you want but don't have yet. Find them on the Browse page or add one yourself. They come off this list when you add the book's file.")
+                    Text("Books you want but don't have yet. Save them from Browse, or add one yourself.")
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .card()
@@ -190,8 +190,7 @@ struct DiscoverView: View {
                 Image(systemName: "sparkles")
                     .font(.title2)
                     .foregroundStyle(.pink)
-                    .frame(width: 40, height: 40)
-                    .background(Color.pink.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .frame(width: 32)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(assistantConnected ? "Ask your assistant for ideas" : "Connect an AI assistant")
                         .font(.headline)
@@ -318,10 +317,6 @@ struct RecommendationCard: View {
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.green)
                     .help("You have this book. Click to show it.")
-                } else if recommendation.state == .saved {
-                    Label("Not in your library yet", systemImage: "arrow.down.circle.dotted")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
                 if let rating = recommendation.goodreadsRating, rating > 0 {
                     Label(String(format: "Goodreads %.2f", rating) + " · \((recommendation.goodreadsRatings ?? 0).formatted(.number.notation(.compactName))) ratings",
@@ -346,25 +341,27 @@ struct RecommendationCard: View {
                 }
             }
             Spacer(minLength: 8)
-            HStack(spacing: 6) {
+            // One clear action, with the rest a click away.
+            HStack(spacing: 10) {
                 if recommendation.state == .new {
                     Button("Save", systemImage: "bookmark") { set(.saved) }
                         .help("Add to your wishlist")
                 }
-                if case .none = ownership {
-                    Button("Read", systemImage: "checkmark") { app.markRead(recommendation) }
-                        .labelStyle(.iconOnly)
-                        .help("You've read it: add it to your library as read, without a file")
-                } else if case .wishlisted = ownership {
-                    Button("Read", systemImage: "checkmark") { app.markRead(recommendation) }
-                        .labelStyle(.iconOnly)
-                        .help("You've read it: add it to your library as read, without a file")
+                Menu {
+                    if case .owned = ownership {} else {
+                        Button("I've Read It", systemImage: "checkmark") { app.markRead(recommendation) }
+                    }
+                    Button("Open on Goodreads", systemImage: "arrow.up.right.square") { find() }
+                    Divider()
+                    Button(recommendation.state == .saved ? "Remove from Wishlist" : "Not for Me", systemImage: "xmark",
+                           role: .destructive) { set(.dismissed) }
+                } label: {
+                    Image(systemName: "ellipsis")
                 }
-                Button("Goodreads", systemImage: "arrow.up.right.square") { find() }
-                    .help("Open this book on Goodreads in your browser")
-                Button(recommendation.state == .saved ? "Remove" : "Dismiss", systemImage: "xmark") { set(.dismissed) }
-                    .labelStyle(.iconOnly)
-                    .help(recommendation.state == .saved ? "Remove from your wishlist" : "Not for me")
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("More")
             }
             .controlSize(.small)
         }
