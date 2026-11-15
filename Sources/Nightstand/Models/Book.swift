@@ -75,6 +75,8 @@ struct Book: Identifiable, Codable, Hashable, Sendable {
     var goodreadsRatings: Int?
     var goodreadsID: String?
     var goodreadsChecked: Date?
+    /// When missing details were last filled in from Open Library and Apple Books.
+    var detailsChecked: Date?
     var dateAdded = Date()
     var dateStarted: Date?
     var dateFinished: Date?

@@ -5,11 +5,13 @@ struct InspectorView: View {
 
     var body: some View {
         let selected = app.selection
+        // Fade only when what the panel shows changes kind (nothing, one book, several). Moving from one book
+        // to the next is instant, so clicking quickly through covers doesn't blur between them.
+        let kind = selected.isEmpty ? 0 : selected.count == 1 ? 1 : 2
         Group {
             if selected.count == 1, let id = selected.first, app.store.book(id) != nil {
                 BookInspector(id: id)
                     .id(id)
-                    .transition(.opacity)
             } else if selected.count > 1 {
                 MultipleSelectionInspector(ids: selected)
             } else {
@@ -17,7 +19,7 @@ struct InspectorView: View {
                                        description: Text("Select a book to rate it, write notes and edit its details."))
             }
         }
-        .animation(.easeInOut(duration: 0.18), value: selected)
+        .animation(.easeInOut(duration: 0.18), value: kind)
     }
 }
 
@@ -417,6 +419,12 @@ private struct MultipleSelectionInspector: View {
                     app.edit(ids)
                 } label: {
                     Label("Edit Details…", systemImage: "pencil").frame(maxWidth: .infinity)
+                }
+                Button {
+                    if app.isFetchingDetails { app.cancelDetails() } else { app.fetchDetails(for: ids) }
+                } label: {
+                    Label(app.isFetchingDetails ? "Stop Getting Details" : "Fill In Missing Details Online",
+                          systemImage: "globe").frame(maxWidth: .infinity)
                 }
                 Menu {
                     ForEach(ReadingStatus.allCases) { status in

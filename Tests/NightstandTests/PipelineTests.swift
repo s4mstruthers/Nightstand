@@ -38,6 +38,7 @@ final class PipelineTests: XCTestCase {
             <dc:identifier id="id" opf:scheme="ISBN">9780000000001</dc:identifier>
             <meta name="calibre:series" content="The Saga"/>
             <meta name="calibre:series_index" content="2"/>
+            <meta name="calibre:rating" content="8.00"/>
             <meta name="cover" content="cover-img"/>
           </metadata>
           <manifest>
@@ -82,6 +83,7 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(metadata.isbn, "9780000000001")
         XCTAssertEqual(metadata.summary, "A fine book.")
         XCTAssertEqual(metadata.coverPath, "OEBPS/images/cover.png")
+        XCTAssertEqual(metadata.rating, 4)
         XCTAssertNotNil(cover)
     }
 
@@ -91,6 +93,23 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(book.title, "Original Title")
         XCTAssertEqual(book.format, .epub)
         XCTAssertTrue(book.hasCover)
+        // The rating inside the file is whoever made it's, not the reader's.
+        XCTAssertEqual(book.rating, 0)
+        // A Calibre library's own record is the reader's, so its rating comes across.
+        var calibre = EPUBMetadata()
+        calibre.title = "From Calibre"
+        calibre.rating = 3
+        XCTAssertEqual(try Ingest.ingest(file: try makeEPUB(named: "c.epub"), booksFolder: library, metadata: calibre).rating, 3)
+
+        // Ratings an earlier version copied from the file are found again, but never ones the reader gave.
+        var copied = book
+        copied.rating = 4
+        var read = copied
+        read.id = UUID(); read.status = .finished
+        var different = copied
+        different.id = UUID(); different.rating = 2
+        let file = library.appending(path: book.id.uuidString).appending(path: book.fileName)
+        XCTAssertEqual(Ingest.ratingsCopiedFromFiles([copied, read, different]) { _ in file }, [copied.id])
         let folder = library.appending(path: book.id.uuidString)
         XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appending(path: "book.epub").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appending(path: "cover.jpg").path))
@@ -634,6 +653,35 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(second.coverURL?.absoluteString, "https://books.google.com/x?id=abc")
         XCTAssertEqual(MetadataLookup.parseGoogleBooks(Data(#"{"totalItems":0}"#.utf8))?.count, 0)
         XCTAssertNil(MetadataLookup.parseGoogleBooks(Data(#"{"error":{"code":429}}"#.utf8))?.first)
+
+        let apple = Data(#"{"resultCount":1,"results":[{"trackId":7,"trackName":"Piranesi","artistName":"Susanna Clarke","description":"A &#34;miraculous&#34; novel&#x2019;s <b>start</b>.","releaseDate":"2020-09-15T07:00:00Z","genres":["Fantasy","Books"],"artworkUrl100":"https://is1.mzstatic.com/a/b.jpg/100x100bb.jpg"}]}"#.utf8)
+        let third = try XCTUnwrap(MetadataLookup.parseAppleBooks(apple)?.first)
+        XCTAssertEqual(third.summary, "A \"miraculous\" novel\u{2019}s start.")
+        XCTAssertEqual(third.published, "2020-09-15")
+        XCTAssertEqual(third.tags, ["Fantasy"])
+        XCTAssertEqual(third.coverURL?.absoluteString, "https://is1.mzstatic.com/a/b.jpg/1200x1200bb.jpg")
+
+        // Only results that are the same book are used: same title, ignoring a subtitle, and the author's surname.
+        let candidates = [third, first, second,
+                          MetadataLookup.Candidate(id: "x", source: "", title: "Piranesi: A Study Guide",
+                                                   authors: ["Some Student"])]
+        XCTAssertEqual(MetadataLookup.matches(title: "Piranesi", authors: ["Susanna Clarke"], in: candidates).map(\.id),
+                       ["apple/7"])
+        XCTAssertEqual(MetadataLookup.matches(title: "Brave New World: A Novel", authors: ["Aldous Huxley"],
+                                              in: candidates).map(\.id), ["openlibrary/works/OL1W"])
+    }
+
+    /// Looks a few books up for real: `NIGHTSTAND_LIVE=1 swift test --filter LiveDetails`
+    func testLiveDetails() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["NIGHTSTAND_LIVE"] != nil)
+        for (title, author) in [("Piranesi", "Susanna Clarke"), ("Project Hail Mary", "Andy Weir"),
+                                ("The Way of Kings", "Brandon Sanderson")] {
+            let found = await MetadataLookup.details(title: title, authors: [author])
+            let details = try XCTUnwrap(found)
+            print("DETAILS: \(title) | cover \(details.coverURL?.absoluteString ?? "-") | \(details.publisher ?? "-") | \(details.published ?? "-") | \(details.isbn ?? "-") | \(details.tags) | \(details.summary?.prefix(80) ?? "-")")
+            XCTAssertNotNil(details.summary)
+            XCTAssertNotNil(details.coverURL)
+        }
     }
 
     /// Prints what the clean-up would do to a real library: `NIGHTSTAND_LIBRARY_INDEX=library.json swift test --filter RealCleanUp`

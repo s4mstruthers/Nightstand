@@ -65,6 +65,7 @@ final class LibraryStore {
         self.activity = activity
         try? FileManager.default.createDirectory(at: booksFolder, withIntermediateDirectories: true)
         load()
+        clearRatingsCopiedFromFiles()
         // The MCP server (an AI assistant) may edit the index while the app is open.
         watcher = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.reloadIfChanged() }
@@ -96,6 +97,25 @@ final class LibraryStore {
         }
         knownModification = LibraryIndex.modificationDate(in: root)
         loadCompanion()
+    }
+
+    /// Once: takes away ratings that earlier versions copied out of book files when they were added.
+    private func clearRatingsCopiedFromFiles() {
+        let key = "clearedRatingsFromFiles"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        let books = books, folder = booksFolder
+        Task {
+            let ids = await Task.detached {
+                Ingest.ratingsCopiedFromFiles(books) {
+                    folder.appending(path: $0.id.uuidString).appending(path: $0.fileName)
+                }
+            }.value
+            UserDefaults.standard.set(true, forKey: key)
+            guard !ids.isEmpty else { return }
+            modify(ids) { $0.rating = 0 }
+            activity.flash("Cleared \(ids.count) rating\(ids.count == 1 ? "" : "s") you didn't give",
+                           detail: "They came from inside the book files when the books were added.")
+        }
     }
 
     private func loadCompanion() {

@@ -1,8 +1,8 @@
 import Foundation
 
-/// Looks books up in public catalogues. Open Library is the main source; Google Books is used when its
-/// shared anonymous quota allows. Runs only when the user asks, and sends only the title and author typed
-/// into the search fields.
+/// Looks books up in public catalogues: Open Library, Apple Books (which has descriptions and good covers
+/// for most books in print), and Google Books when its shared anonymous quota allows. Runs only when the user
+/// asks, and sends only the title and author (or the book's ISBN).
 enum MetadataLookup {
     struct Candidate: Identifiable, Hashable, Sendable {
         let id: String
@@ -28,12 +28,74 @@ enum MetadataLookup {
 
     static func search(title: String, author: String) async -> Results {
         async let openLibrary = searchOpenLibrary(title: title, author: author)
+        async let apple = searchAppleBooks(title: title, author: author)
         async let google = searchGoogleBooks(title: title, author: author)
-        let (first, second) = await (openLibrary, google)
+        let (first, second, third) = await (openLibrary, apple, google)
         var unavailable: [String] = []
         if first == nil { unavailable.append("Open Library") }
-        if second == nil { unavailable.append("Google Books") }
-        return Results(candidates: (first ?? []) + (second ?? []), unavailable: unavailable)
+        if second == nil { unavailable.append("Apple Books") }
+        // Google's anonymous quota is often used up; that's not worth mentioning when the others answered.
+        if third == nil, first == nil || second == nil { unavailable.append("Google Books") }
+        return Results(candidates: (second ?? []) + (first ?? []) + (third ?? []), unavailable: unavailable)
+    }
+
+    // MARK: Filling in many books
+
+    /// What was found for one book, merged from every source that matched it.
+    struct Details: Sendable {
+        var summary: String?
+        var publisher: String?
+        var published: String?
+        var isbn: String?
+        var tags: [String] = []
+        var coverURL: URL?
+
+        var isEmpty: Bool {
+            summary == nil && publisher == nil && published == nil && isbn == nil && tags.isEmpty && coverURL == nil
+        }
+    }
+
+    /// The candidates that are this book: the same title (ignoring subtitles) and, when known, an author
+    /// sharing the surname. Nothing is taken from a result that isn't clearly the same book.
+    static func matches(title: String, authors: [String], in candidates: [Candidate]) -> [Candidate] {
+        func main(_ text: String) -> String {
+            let cut = text.firstIndex { $0 == ":" || $0 == "(" || $0 == "[" } ?? text.endIndex
+            return Insights.normalize(String(text[..<cut]))
+        }
+        let wanted = Set([Insights.normalize(title), main(title)].filter { !$0.isEmpty })
+        let surnames = authors.compactMap { $0.split(separator: " ").last.map { Insights.normalize(String($0)) } }
+            .filter { !$0.isEmpty }
+        return candidates.filter { candidate in
+            let found = [Insights.normalize(candidate.title), main(candidate.title)]
+            guard found.contains(where: wanted.contains) else { return false }
+            guard !surnames.isEmpty, !candidate.authors.isEmpty else { return true }
+            let names = Insights.normalize(candidate.authors.joined(separator: " "))
+            return surnames.contains { names.contains($0) }
+        }
+    }
+
+    /// Looks one book up in every source and merges what the matching results say.
+    static func details(title: String, authors: [String]) async -> Details? {
+        let query = MetadataCleaner.stripMarketingSubtitle(MetadataCleaner.seriesInParentheses(title)?.title ?? title)
+        let author = MetadataCleaner.cleanAuthors(authors).first ?? ""
+        let results = await search(title: query, author: author)
+        guard results.unavailable.count < 3 else { return nil }
+        let found = matches(title: query, authors: authors, in: results.candidates)
+        var details = Details()
+        details.summary = found.lazy.compactMap(\.summary).first { $0.count > 80 }
+        // Open Library's publisher and ISBN belong to whichever edition it lists first (often a large-print or
+        // translated one), so those only come from a source that describes one edition, with both together.
+        if let edition = found.first(where: { $0.source == "Google Books" && ($0.publisher != nil || $0.isbn != nil) }) {
+            details.publisher = edition.publisher
+            details.isbn = edition.isbn
+        }
+        details.published = found.lazy.compactMap(\.published).min()
+        details.tags = found.first { !$0.tags.isEmpty }?.tags ?? []
+        details.coverURL = found.lazy.compactMap(\.coverURL).first
+        if details.summary == nil, let key = found.lazy.compactMap(\.workKey).first {
+            details.summary = await openLibraryDescription(workKey: key)
+        }
+        return details
     }
 
     private static func fetch(_ components: URLComponents) async -> Data? {
@@ -100,6 +162,49 @@ enum MetadataLookup {
         let text = (object["description"] as? String)
             ?? ((object["description"] as? [String: Any])?["value"] as? String)
         return text.map(OPF.plainText)
+    }
+
+    // MARK: Apple Books
+
+    private struct AppleSearch: Decodable {
+        struct Item: Decodable {
+            var trackId: Int
+            var trackName: String?
+            var artistName: String?
+            var description: String?
+            var releaseDate: String?
+            var genres: [String]?
+            var artworkUrl100: String?
+        }
+        var results: [Item]
+    }
+
+    static func parseAppleBooks(_ data: Data) -> [Candidate]? {
+        guard let search = try? JSONDecoder().decode(AppleSearch.self, from: data) else { return nil }
+        return search.results.compactMap { item in
+            guard let title = item.trackName else { return nil }
+            // Artwork comes at any size: ask for a large one instead of the 100px thumbnail.
+            let cover = item.artworkUrl100?.replacingOccurrences(of: "100x100bb", with: "1200x1200bb")
+            return Candidate(
+                id: "apple/\(item.trackId)", source: "Apple Books", title: title, subtitle: nil,
+                authors: item.artistName.map { $0.components(separatedBy: " & ") } ?? [],
+                publisher: nil, published: item.releaseDate.map { String($0.prefix(10)) },
+                summary: item.description.map(OPF.plainText), isbn: nil,
+                coverURL: cover.flatMap(URL.init(string:)),
+                tags: (item.genres ?? []).filter { $0 != "Books" })
+        }
+    }
+
+    private static func searchAppleBooks(title: String, author: String) async -> [Candidate]? {
+        var components = URLComponents(string: "https://itunes.apple.com/search")!
+        components.queryItems = [
+            URLQueryItem(name: "term", value: [title, author].filter { !$0.isEmpty }.joined(separator: " ")),
+            URLQueryItem(name: "media", value: "ebook"),
+            URLQueryItem(name: "entity", value: "ebook"),
+            URLQueryItem(name: "limit", value: "8"),
+        ]
+        guard let data = await fetch(components) else { return nil }
+        return parseAppleBooks(data)
     }
 
     // MARK: Google Books

@@ -221,8 +221,8 @@ enum Insights {
             switch self {
             case .unrated: "Rate them so your favourites and recommendations get better."
             case .noThoughts: "Jot down what you liked and didn't while you remember."
-            case .missingCover: "Use Look Up Details Online, or drop an image on the cover."
-            case .missingDescription: "Use Look Up Details Online to fill these in."
+            case .missingCover: "Fill them in online, or drop an image on a cover."
+            case .missingDescription: "Nightstand can find most of these online."
             case .unknownAuthor: "Add the author with Edit Details."
             }
         }

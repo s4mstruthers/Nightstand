@@ -32,6 +32,13 @@ struct LibraryView: View {
                     Image(systemName: issue.symbol).foregroundStyle(.orange)
                     Text(issue.advice).font(.callout)
                     Spacer()
+                    if issue == .missingDescription || issue == .missingCover {
+                        Button(app.isFetchingDetails ? "Stop" : "Fill In \(books.count) Online") {
+                            if app.isFetchingDetails { app.cancelDetails() } else { app.fetchDetails(for: Set(books.map(\.id))) }
+                        }
+                        .controlSize(.small)
+                        .buttonStyle(.borderedProminent)
+                    }
                     Button("Back to Organise") { withAnimation(.snappy) { app.sidebar = .organise } }
                         .controlSize(.small)
                 }
@@ -42,7 +49,6 @@ struct LibraryView: View {
             }
         }
         .onDeleteCommand { app.requestDelete(app.selection) }
-        .onExitCommand { withAnimation(.snappy) { app.selection = [] } }
     }
 
     private var emptyText: String {
@@ -95,29 +101,43 @@ struct LibraryGridView: View {
     let coverSize: Double
 
     var body: some View {
-        ScrollView {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: coverSize, maximum: coverSize * 1.35), spacing: 24)],
-                      spacing: 28) {
-                ForEach(books) { book in
-                    BookCell(book: book,
-                             selected: app.selection.contains(book.id),
-                             onDevice: app.devices.isOnDevice(book.id),
-                             selecting: !app.selection.isEmpty) {
-                        withAnimation(.snappy(duration: 0.18)) { app.toggle(book) }
+        GeometryReader { proxy in
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: coverSize, maximum: coverSize * 1.35), spacing: 24)],
+                          spacing: 28) {
+                    ForEach(books) { book in
+                        BookCell(book: book,
+                                 selected: app.selection.contains(book.id),
+                                 onDevice: app.devices.isOnDevice(book.id),
+                                 selecting: !app.selection.isEmpty)
+                            // One handler for single clicks, so a click on the tick circle can't also count as a
+                            // click on the cover (which used to undo the tick straight away).
+                            .simultaneousGesture(SpatialTapGesture().onEnded { tap in
+                                if BookCell.tickArea.contains(tap.location) {
+                                    withAnimation(.snappy(duration: 0.18)) { app.toggle(book) }
+                                } else {
+                                    app.click(book, in: books)
+                                }
+                            })
+                            .simultaneousGesture(SpatialTapGesture(count: 2).onEnded { tap in
+                                if !BookCell.tickArea.contains(tap.location), !NSEvent.modifierFlags.contains(.command),
+                                   !NSEvent.modifierFlags.contains(.shift) {
+                                    app.open(book)
+                                }
+                            })
+                            .contextMenu { BookMenu(ids: app.targets(for: book)) }
+                            .transition(.scale(scale: 0.85).combined(with: .opacity))
                     }
-                        .gesture(TapGesture(count: 2).onEnded { app.open(book) })
-                        .simultaneousGesture(TapGesture().onEnded { app.click(book, in: books) })
-                        .contextMenu { BookMenu(ids: app.targets(for: book)) }
-                        .transition(.scale(scale: 0.85).combined(with: .opacity))
                 }
-            }
-            .padding(24)
-            .animation(.snappy(duration: 0.35), value: books.map(\.id))
-            .frame(maxWidth: .infinity, minHeight: 400, alignment: .top)
-            .background {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .onTapGesture { app.selection = [] }
+                .padding(24)
+                .animation(.snappy(duration: 0.35), value: books.map(\.id))
+                .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .top)
+                .background {
+                    // Clicking anywhere between or below the covers clears the selection.
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { withAnimation(.snappy) { app.selection = [] } }
+                }
             }
         }
     }
@@ -129,8 +149,10 @@ struct BookCell: View {
     let onDevice: Bool
     /// True while any book is selected, so every cover shows its tick circle.
     var selecting = false
-    var toggle: () -> Void = {}
     @State private var hovering = false
+
+    /// Where the tick circle sits on the cover, generously sized so it's easy to hit.
+    static let tickArea = CGRect(x: 0, y: 0, width: 40, height: 40)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -156,8 +178,6 @@ struct BookCell: View {
                             .shadow(radius: 2, y: 1)
                             .contentTransition(.symbolEffect(.replace))
                             .padding(6)
-                            .contentShape(Rectangle())
-                            .highPriorityGesture(TapGesture().onEnded(toggle))
                             .help(selected ? "Take out of the selection" : "Add to the selection")
                             .transition(.scale(scale: 0.6).combined(with: .opacity))
                     }
@@ -203,11 +223,13 @@ struct BookCell: View {
                     if book.rating > 0 {
                         StarRating(rating: .constant(book.rating), size: 9, interactive: false)
                     } else if let community = book.goodreadsRating, community > 0 {
-                        // No rating of your own yet: show what Goodreads readers think, in grey.
-                        Label(String(format: "%.2f", community), systemImage: "person.3.fill")
+                        // No rating of your own yet: show what Goodreads readers think, in grey and named, so it
+                        // isn't mistaken for a rating of your own.
+                        Text("Goodreads " + String(format: "%.1f", community))
                             .font(.caption2.monospacedDigit())
                             .foregroundStyle(.tertiary)
-                            .help("Goodreads rating")
+                            .lineLimit(1)
+                            .help("The Goodreads readers' average. You haven't rated this book yet.")
                     }
                     if book.status == .reading || book.status == .finished {
                         Image(systemName: book.status.symbol)
@@ -321,6 +343,13 @@ struct BookMenu: View {
         }
         if let single {
             Button("Look Up Details Online…", systemImage: "globe") { app.lookingUp = single }
+        }
+        Button(ids.count > 1 ? "Fill In Missing Details Online" : "Fill In Missing Details Automatically",
+               systemImage: "wand.and.sparkles") {
+            app.fetchDetails(for: ids, onlyMissing: ids.count > 1)
+        }
+        .disabled(app.isFetchingDetails)
+        if let single {
             Button("Change Cover…", systemImage: "photo") { app.chooseCover(for: single.id) }
         }
         Button(ids.count > 1 ? "Get Goodreads Ratings" : "Get Goodreads Rating", systemImage: "person.3") {

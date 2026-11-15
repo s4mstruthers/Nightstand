@@ -72,7 +72,9 @@ enum Ingest {
             book.summary = metadata.summary
             book.published = metadata.published
             book.isbn = metadata.isbn
-            book.rating = metadata.rating ?? 0
+            // A rating inside a book file is usually whoever made the file's, not yours, so only a Calibre
+            // library's own records (passed in as `override`) bring a rating with them.
+            book.rating = override?.rating ?? 0
             if let added = metadata.added { book.dateAdded = added }
 
             if let coverOverride, let data = try? Data(contentsOf: coverOverride) { cover = data }
@@ -174,6 +176,21 @@ enum MobiReader {
             }
         }
         return metadata
+    }
+}
+
+extension Ingest {
+    /// Books whose rating was most likely copied from the file when it was added, rather than given by the
+    /// reader: earlier versions took the rating stored inside an EPUB (usually whoever made the file's). Only
+    /// books not yet finished or abandoned, with no thoughts or favourite, and whose rating is exactly the one
+    /// inside their file count.
+    static func ratingsCopiedFromFiles(_ books: [Book], file: (Book) -> URL) -> Set<UUID> {
+        Set(books.filter { book in
+            guard book.rating > 0, book.status == .unread || book.status == .reading, book.dateFinished == nil,
+                  !book.isFavourite, (book.liked ?? "").isEmpty, (book.disliked ?? "").isEmpty,
+                  book.format == .epub || book.format == .kepub else { return false }
+            return (try? EPUBReader.read(file(book)))?.metadata.rating == book.rating
+        }.map(\.id))
     }
 }
 

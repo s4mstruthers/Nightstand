@@ -75,7 +75,7 @@ struct LookupSheet: View {
 
     private var footnote: String {
         unavailable.isEmpty
-            ? "Searches Open Library and Google Books with the title and author above."
+            ? "Searches Open Library, Apple Books and Google Books with the title and author above."
             : "\(unavailable.joined(separator: " and ")) couldn't be reached just now."
     }
 

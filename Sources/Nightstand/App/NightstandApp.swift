@@ -81,6 +81,12 @@ struct NightstandApp: App {
                 }
                 .keyboardShortcut("l")
                 .disabled(app.selection.count != 1)
+                Button(app.selection.isEmpty ? "Fill In Missing Details for All Books" : "Fill In Missing Details Online") {
+                    app.fetchDetails(for: app.selection.isEmpty ? Set(app.store.books.map(\.id)) : app.selection,
+                                     onlyMissing: app.selection.count != 1)
+                }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
+                .disabled(app.isFetchingDetails || app.store.books.isEmpty)
             }
             CommandGroup(after: .sidebar) {
                 Button(app.showInspector ? "Hide Details" : "Show Details") {

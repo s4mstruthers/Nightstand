@@ -191,6 +191,16 @@ enum OPF {
         for (entity, value) in ["&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"", "&#39;": "'", "&nbsp;": " "] {
             text = text.replacingOccurrences(of: entity, with: value)
         }
+        // Numeric entities such as &#34; and &#x2019;.
+        if let regex = try? NSRegularExpression(pattern: "&#(x?)([0-9a-fA-F]+);") {
+            for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).reversed() {
+                guard let whole = Range(match.range, in: text), let digits = Range(match.range(at: 2), in: text),
+                      let hex = Range(match.range(at: 1), in: text),
+                      let code = UInt32(text[digits], radix: text[hex].isEmpty ? 10 : 16),
+                      let scalar = Unicode.Scalar(code) else { continue }
+                text.replaceSubrange(whole, with: String(Character(scalar)))
+            }
+        }
         return text
             .replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)

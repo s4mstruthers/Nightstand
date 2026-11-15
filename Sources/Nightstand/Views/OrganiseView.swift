@@ -63,11 +63,12 @@ struct OrganiseView: View {
                              status: nil, button: "Browse Fonts") {
                         withAnimation(.snappy) { app.sidebar = .fonts }
                     }
-                    ToolCard(symbol: "globe", tint: .teal, title: "Look Up Details Online",
-                             text: "Finds the cover, description and publishing details for a book from Open Library and Google Books. Select a book and press ⌘L, or right-click it.",
-                             status: nil, button: "Show Books Missing a Description",
-                             disabled: !books.contains(where: Insights.Issue.missingDescription.matches)) {
-                        withAnimation(.snappy) { app.sidebar = .needs(.missingDescription) }
+                    ToolCard(symbol: "globe", tint: .teal, title: "Fill In Details Online",
+                             text: "Finds missing descriptions, covers, publication dates and genres on Open Library and Apple Books, for every book at once. Only fills gaps: nothing you've written is replaced. To choose a match yourself, select one book and press ⌘L.",
+                             status: "\(books.count(where: AppModel.lacksDetails)) missing something",
+                             button: app.isFetchingDetails ? "Stop" : "Fill In Missing Details",
+                             disabled: !app.isFetchingDetails && !books.contains(where: AppModel.lacksDetails)) {
+                        if app.isFetchingDetails { app.cancelDetails() } else { app.fetchDetails(for: Set(books.map(\.id))) }
                     }
                 }
             }

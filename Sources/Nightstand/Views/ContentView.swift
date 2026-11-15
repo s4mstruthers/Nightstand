@@ -100,10 +100,17 @@ struct ContentView: View {
             Text("The book file, your rating and your notes are moved to the Trash.")
         }
         .onChange(of: app.sidebar) { old, new in
-            // A book picked on Home, Discover or Journal doesn't follow you to another page.
+            // A book picked on Home, Discover or Journal doesn't follow you to another page, and moving between
+            // lists keeps only the selected books that are in the new list, so nothing is selected out of sight.
             let pages: [SidebarItem?] = [.home, .discover, .journal, .organise, .fonts]
-            if pages.contains(old), pages.contains(new) { app.selection = [] }
+            if pages.contains(old), pages.contains(new) {
+                app.selection = []
+            } else if app.showsBooks {
+                let visible = Set(app.visibleBooks.map(\.id))
+                if !app.selection.isSubset(of: visible) { app.selection.formIntersection(visible) }
+            }
         }
+        .onAppear { app.installEscapeKey() }
         .onChange(of: app.devices.devices.map(\.id)) { _, ids in
             if case .device(let id) = app.sidebar, !ids.contains(id) { app.sidebar = .all }
         }
@@ -278,6 +285,10 @@ struct SelectionBar: View {
             .fixedSize()
             Button("Clean Up", systemImage: "wand.and.stars") { app.startCleanUp() }
                 .help("Suggest tidier titles, authors and series for these books")
+            Button(app.isFetchingDetails ? "Stop" : "Get Details", systemImage: app.isFetchingDetails ? "stop.circle" : "globe") {
+                if app.isFetchingDetails { app.cancelDetails() } else { app.fetchDetails(for: ids) }
+            }
+            .help("Fill in missing descriptions, covers and publishing details from Open Library and Apple Books")
             if let device = app.devices.devices.first {
                 Button("Send", systemImage: "arrow.up.forward.app") { app.send(ids, to: device.id) }
                     .help("Send to \(device.name)")

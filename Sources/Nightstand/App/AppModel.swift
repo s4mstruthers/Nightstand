@@ -197,6 +197,25 @@ final class AppModel {
         selection = Set(visibleBooks.map(\.id))
     }
 
+    @ObservationIgnored private var escapeMonitor: Any?
+
+    /// Escape clears the selection wherever the focus is in the main window, except while typing (where it
+    /// belongs to the text field) or when a sheet or menu has it.
+    func installEscapeKey() {
+        guard escapeMonitor == nil else { return }
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.keyCode == 53, let self,
+                  event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
+                  let window = event.window, window.isKeyWindow, window.attachedSheet == nil,
+                  window.sheetParent == nil, !(window is NSPanel),
+                  window.identifier?.rawValue.localizedCaseInsensitiveContains("settings") != true,
+                  !(window.firstResponder is NSText), !self.selection.isEmpty,
+                  !self.showQuickFind else { return event }
+            withAnimation(.snappy) { self.selection = [] }
+            return nil
+        }
+    }
+
     // MARK: Actions
 
     func addBooks() {
@@ -354,6 +373,86 @@ final class AppModel {
 
     func cancelGoodreads() {
         goodreadsTask?.cancel()
+    }
+
+    // MARK: Details from the web
+
+    private(set) var detailsTask: Task<Void, Never>?
+    var isFetchingDetails: Bool { detailsTask != nil }
+
+    /// Whether a book is missing anything a lookup could fill in.
+    static func lacksDetails(_ book: Book) -> Bool {
+        (book.summary ?? "").isEmpty || !book.hasCover || book.published == nil
+    }
+
+    /// Fills in what's missing (description, cover, first published date, tags, and publisher and ISBN when known) for each book from Open Library
+    /// and Apple Books, one book at a time. Nothing already there is replaced, and only results with the same
+    /// title and author are used. With `onlyMissing`, books with nothing missing or looked up in the last
+    /// month are skipped.
+    func fetchDetails(for ids: Set<UUID>, onlyMissing: Bool = true) {
+        guard detailsTask == nil else { return }
+        let month: TimeInterval = 30 * 24 * 3600
+        let books = store.books.filter { ids.contains($0.id) }.filter { book in
+            !onlyMissing || (Self.lacksDetails(book)
+                && book.detailsChecked.map { Date().timeIntervalSince($0) > month } ?? true)
+        }
+        guard !books.isEmpty else {
+            activity.flash(ids.count == 1 ? "Nothing missing" : "Nothing missing from these books",
+                           detail: "Every book already has a description, cover and publishing details.")
+            return
+        }
+        detailsTask = Task {
+            defer { detailsTask = nil }
+            var filled = 0, covers = 0, unreachable = 0
+            for (index, book) in books.enumerated() {
+                if Task.isCancelled { break }
+                activity.set("Getting details online…", detail: book.title,
+                             progress: Double(index) / Double(books.count))
+                guard let found = await MetadataLookup.details(title: book.title, authors: book.authors) else {
+                    unreachable += 1
+                    if unreachable >= 3, filled == 0 {
+                        activity.flash("Couldn't reach the book catalogues", detail: "Check your internet connection.")
+                        return
+                    }
+                    continue
+                }
+                var changed = false
+                store.modify([book.id]) { book in
+                    book.detailsChecked = Date()
+                    func fill(_ key: WritableKeyPath<Book, String?>, _ value: String?) {
+                        guard let value, !value.isEmpty, (book[keyPath: key] ?? "").isEmpty else { return }
+                        book[keyPath: key] = value
+                        changed = true
+                    }
+                    fill(\.summary, found.summary)
+                    fill(\.publisher, found.publisher)
+                    fill(\.published, found.published)
+                    fill(\.isbn, found.isbn)
+                    if book.tags.isEmpty, !found.tags.isEmpty {
+                        book.tags = found.tags
+                        changed = true
+                    }
+                }
+                if !book.hasCover, let url = found.coverURL, let data = await MetadataLookup.download(url) {
+                    store.setCover(data, for: book.id)
+                    covers += 1
+                    changed = true
+                }
+                if changed { filled += 1 }
+                // The catalogues are free to use; stay a light visitor.
+                if index < books.count - 1 { try? await Task.sleep(for: .seconds(3)) }
+            }
+            var detail: [String] = []
+            if covers > 0 { detail.append("\(covers) cover\(covers == 1 ? "" : "s")") }
+            if filled < books.count { detail.append("\(books.count - filled) had no confident match") }
+            activity.flash(filled == 0 ? "No new details found"
+                           : "Filled in details for \(filled) book\(filled == 1 ? "" : "s")",
+                           detail: detail.isEmpty ? nil : detail.joined(separator: " · "))
+        }
+    }
+
+    func cancelDetails() {
+        detailsTask?.cancel()
     }
 
     // MARK: Tidying a Kobo
