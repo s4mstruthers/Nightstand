@@ -38,10 +38,32 @@ struct FormattingSettings: View {
 
             if format.applyFormatting {
                 Section("Text") {
-                    LabeledContent("Base font size") {
-                        HStack {
-                            Slider(value: $settings.format.fontScale, in: 70...160, step: 5)
-                            Text("\(Int(format.fontScale))%").monospacedDigit().frame(width: 44, alignment: .trailing)
+                    Picker("Base font size", selection: $settings.format.fontSizeMode) {
+                        ForEach(FormatOptions.FontSizeMode.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    if format.fontSizeMode == .relative {
+                        LabeledContent {
+                            HStack {
+                                Slider(value: $settings.format.fontScale, in: 70...160, step: 5)
+                                Text("\(Int(format.fontScale))%").monospacedDigit().frame(width: 52, alignment: .trailing)
+                            }
+                        } label: {
+                            Text("Size")
+                            Text("Of the size chosen on the e-reader, which still works as usual.")
+                        }
+                    } else {
+                        LabeledContent {
+                            HStack {
+                                Slider(value: $settings.format.fontSizePoints, in: 8...24, step: 0.5)
+                                Stepper("", value: $settings.format.fontSizePoints, in: 8...24, step: 0.5)
+                                    .labelsHidden()
+                                Text("\(FormatOptions.points(format.fontSizePoints)) pt").monospacedDigit()
+                                    .frame(width: 52, alignment: .trailing)
+                            }
+                        } label: {
+                            Text("Size")
+                            Text("The same size in every book, like Calibre's base font size. Some e-readers then limit what their own font size setting can do.")
                         }
                     }
                     Toggle("Ignore fixed font sizes set by the publisher", isOn: $settings.format.normalizeFontSizes)
@@ -88,6 +110,7 @@ struct FormattingSettings: View {
         .formStyle(.grouped)
         .animation(.snappy, value: format.applyFormatting)
         .animation(.snappy, value: format.overrideLineHeight)
+        .animation(.snappy, value: format.fontSizeMode)
     }
 }
 
@@ -108,7 +131,8 @@ private struct FormatPreview: View {
     ]
 
     var body: some View {
-        let size = 13 * format.fontScale / 100
+        // The preview's 13 points stand for the e-reader's usual 12.
+        let size = format.fontSizeMode == .fixed ? format.fontSizePoints * 13 / 12 : 13 * format.fontScale / 100
         let spacing = format.overrideLineHeight ? (format.lineHeight - 1.2) * size : 2
         VStack(alignment: .leading, spacing: format.paragraphStyle == .indented ? 0 : size * 0.7) {
             ForEach(paragraphs, id: \.self) { paragraph in

@@ -241,10 +241,27 @@ struct FormatOptions: Codable, Equatable, Sendable {
         }
     }
 
+    enum FontSizeMode: String, Codable, CaseIterable, Identifiable, Sendable {
+        /// A percentage of the size chosen on the e-reader.
+        case relative
+        /// An exact size in points, as Calibre's "Base font size" sets.
+        case fixed
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .relative: "Relative"
+            case .fixed: "Exact Size"
+            }
+        }
+    }
+
     var convertToKepub = true
     var applyFormatting = false
+    var fontSizeMode: FontSizeMode = .relative
     /// Base font size as a percentage of the device's size.
     var fontScale: Double = 100
+    /// Base font size in points, used when `fontSizeMode` is `.fixed`.
+    var fontSizePoints: Double = 12
     /// Forces body text to the base size, ignoring fixed sizes set by the publisher.
     var normalizeFontSizes = false
     var overrideLineHeight = false
@@ -268,7 +285,9 @@ struct FormatOptions: Codable, Equatable, Sendable {
         }
         convertToKepub = value(.convertToKepub, true)
         applyFormatting = value(.applyFormatting, false)
+        fontSizeMode = value(.fontSizeMode, .relative)
         fontScale = value(.fontScale, 100)
+        fontSizePoints = value(.fontSizePoints, 12)
         normalizeFontSizes = value(.normalizeFontSizes, false)
         overrideLineHeight = value(.overrideLineHeight, false)
         lineHeight = value(.lineHeight, 1.4)
@@ -280,12 +299,22 @@ struct FormatOptions: Codable, Equatable, Sendable {
         extraCSS = value(.extraCSS, "")
     }
 
+    /// "12" or "11.5": whole sizes without a decimal point.
+    static func points(_ value: Double) -> String {
+        value.rounded() == value ? String(Int(value)) : String(format: "%.1f", value)
+    }
+
     /// The stylesheet injected into every chapter, or nil when there is nothing to change.
     func css() -> String? {
         guard applyFormatting else { return nil }
         var rules: [String] = []
-        if Int(fontScale) != 100 {
+        switch fontSizeMode {
+        case .relative where Int(fontScale) != 100:
             rules.append("html, body { font-size: \(Int(fontScale))% !important; }")
+        case .fixed:
+            // Headings and other sizes set in em or % then scale from this, as they do in Calibre.
+            rules.append("html, body { font-size: \(Self.points(fontSizePoints))pt !important; }")
+        default: break
         }
         if normalizeFontSizes {
             rules.append("p, li, blockquote, dd, td { font-size: 1em !important; }")

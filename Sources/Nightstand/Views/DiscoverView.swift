@@ -21,6 +21,8 @@ struct DiscoverView: View {
         let upNext = Insights.nextInSeries(books)
 
         Page(title: "Discover", subtitle: "What to read next, based on what you love.") {
+            OnlineSearchSection().staggered(0)
+
             tasteSection(taste).staggered(0)
 
             VStack(alignment: .leading, spacing: 12) {
@@ -53,6 +55,8 @@ struct DiscoverView: View {
                 .staggered(2)
             }
 
+            SeriesGapsSection().staggered(2)
+
             VStack(alignment: .leading, spacing: 12) {
                 SectionHeading(title: "Wishlist", symbol: "bookmark") {
                     Button("Add a Book", systemImage: "plus") { withAnimation(.snappy) { adding.toggle() } }
@@ -61,7 +65,7 @@ struct DiscoverView: View {
                 }
                 if adding { addForm }
                 if saved.isEmpty, !adding {
-                    Text("Books you want but don't have yet. Save a suggestion, or add one yourself.")
+                    Text("Books you want but don't have yet. Search for one above, save a suggestion, or add one yourself. When you add the book's file to your library, it comes off this list.")
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .card()
@@ -273,12 +277,10 @@ struct RecommendationCard: View {
     var compact = false
 
     var body: some View {
+        let ownership = app.ownership(title: recommendation.title, authors: recommendation.authors)
         HStack(alignment: .top, spacing: 14) {
-            PlaceholderCover(book: Book(title: recommendation.title, authors: recommendation.authors, format: .epub))
-                .aspectRatio(2.0 / 3.0, contentMode: .fit)
+            WebCover(url: recommendation.coverURL, title: recommendation.title, authors: recommendation.authors)
                 .frame(width: compact ? 40 : 54)
-                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-                .shadow(color: .black.opacity(0.18), radius: 4, y: 2)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(recommendation.title).font(.system(.headline, design: .serif)).lineLimit(2)
@@ -287,8 +289,30 @@ struct RecommendationCard: View {
                             .help("Suggested by your assistant")
                     }
                 }
-                if !recommendation.authors.isEmpty {
-                    Text(recommendation.authorText).font(.callout).foregroundStyle(.secondary)
+                if !recommendation.authors.isEmpty || recommendation.series != nil {
+                    Text([recommendation.authorText,
+                          recommendation.series.map { name in
+                              recommendation.seriesIndex.map { "\(name) #\($0.rounded() == $0 ? String(Int($0)) : String($0))" } ?? name
+                          },
+                          recommendation.published]
+                        .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                if case .owned(let book) = ownership {
+                    Button {
+                        withAnimation(.snappy) { app.showInLibrary(book) }
+                    } label: {
+                        Label("In your library", systemImage: "checkmark.circle.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.green)
+                    .help("You have this book. Click to show it.")
+                } else if recommendation.state == .saved {
+                    Label("Not in your library yet", systemImage: "arrow.down.circle.dotted")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 if let rating = recommendation.goodreadsRating, rating > 0 {
                     Label(String(format: "Goodreads %.2f", rating) + " · \((recommendation.goodreadsRatings ?? 0).formatted(.number.notation(.compactName))) ratings",
@@ -301,6 +325,13 @@ struct RecommendationCard: View {
                     Text(recommendation.reason)
                         .font(.callout)
                         .lineLimit(compact ? 2 : nil)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 2)
+                } else if let summary = recommendation.summary, !summary.isEmpty {
+                    Text(summary)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(compact ? 2 : 3)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.top, 2)
                 }

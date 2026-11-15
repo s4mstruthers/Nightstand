@@ -39,6 +39,29 @@ enum MetadataLookup {
         return Results(candidates: (second ?? []) + (first ?? []) + (third ?? []), unavailable: unavailable)
     }
 
+    // MARK: Browsing
+
+    /// Books matching words typed on the Discover page: a title, an author or both. Apple Books comes first
+    /// for its covers and descriptions; Open Library adds what Apple doesn't sell. One entry per book.
+    static func browse(_ query: String) async -> Results {
+        async let apple = searchAppleBooks(title: query, author: "", limit: 20)
+        async let openLibrary = searchOpenLibrary(query: query)
+        let (first, second) = await (apple, openLibrary)
+        var unavailable: [String] = []
+        if first == nil { unavailable.append("Apple Books") }
+        if second == nil { unavailable.append("Open Library") }
+        var seen: Set<String> = []
+        var unique: [Candidate] = []
+        for candidate in (first ?? []) + (second ?? []) {
+            // Translations and box sets crowd the results; one per title and first author.
+            let cut = candidate.title.firstIndex { $0 == ":" || $0 == "(" } ?? candidate.title.endIndex
+            let key = Insights.normalize(String(candidate.title[..<cut]))
+                + "|" + Insights.normalize(candidate.authors.first?.split(separator: " ").last.map(String.init) ?? "")
+            if seen.insert(key).inserted { unique.append(candidate) }
+        }
+        return Results(candidates: unique, unavailable: unavailable)
+    }
+
     // MARK: Filling in many books
 
     /// What was found for one book, merged from every source that matched it.
@@ -142,6 +165,18 @@ enum MetadataLookup {
         }
     }
 
+    private static func searchOpenLibrary(query: String) async -> [Candidate]? {
+        var components = URLComponents(string: "https://openlibrary.org/search.json")!
+        components.queryItems = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "limit", value: "12"),
+            URLQueryItem(name: "fields",
+                         value: "key,title,subtitle,author_name,first_publish_year,isbn,publisher,cover_i,subject"),
+        ]
+        guard let data = await fetch(components) else { return nil }
+        return parseOpenLibrary(data)
+    }
+
     private static func searchOpenLibrary(title: String, author: String) async -> [Candidate]? {
         var components = URLComponents(string: "https://openlibrary.org/search.json")!
         components.queryItems = [
@@ -195,13 +230,13 @@ enum MetadataLookup {
         }
     }
 
-    private static func searchAppleBooks(title: String, author: String) async -> [Candidate]? {
+    private static func searchAppleBooks(title: String, author: String, limit: Int = 8) async -> [Candidate]? {
         var components = URLComponents(string: "https://itunes.apple.com/search")!
         components.queryItems = [
             URLQueryItem(name: "term", value: [title, author].filter { !$0.isEmpty }.joined(separator: " ")),
             URLQueryItem(name: "media", value: "ebook"),
             URLQueryItem(name: "entity", value: "ebook"),
-            URLQueryItem(name: "limit", value: "8"),
+            URLQueryItem(name: "limit", value: String(limit)),
         ]
         guard let data = await fetch(components) else { return nil }
         return parseAppleBooks(data)

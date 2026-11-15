@@ -15,6 +15,8 @@ enum GoodreadsLookup {
         var ratings: Int
         var series: String?
         var seriesIndex: Double?
+        var coverURL: URL?
+        var summary: String?
 
         var page: URL { URL(string: "https://www.goodreads.com/book/show/\(id)")! }
     }
@@ -47,12 +49,21 @@ enum GoodreadsLookup {
         return items.compactMap { item in
             guard let id = item["bookId"] as? String ?? (item["bookId"] as? NSNumber)?.stringValue,
                   let full = item["title"] as? String else { return nil }
-            let rating = (item["avgRating"] as? String).flatMap(Double.init) ?? (item["avgRating"] as? NSNumber)?.doubleValue ?? 0
+            // Numbers arrive as text or as numbers, depending on the field and the day.
+            func number(_ key: String) -> Double? {
+                (item[key] as? String).flatMap(Double.init) ?? (item[key] as? NSNumber)?.doubleValue
+            }
             let series = MetadataCleaner.seriesInParentheses(full)
+            // Thumbnails carry a size such as "._SY75_"; without it the image comes at full size.
+            let cover = (item["imageUrl"] as? String)?
+                .replacingOccurrences(of: #"\._S[XY]\d+_"#, with: "", options: .regularExpression)
+            let summary = ((item["description"] as? [String: Any])?["html"] as? String).map(OPF.plainText)
             return Match(id: id, title: item["bookTitleBare"] as? String ?? series?.title ?? full,
                          author: (item["author"] as? [String: Any])?["name"] as? String ?? "",
-                         rating: rating, ratings: (item["ratingsCount"] as? NSNumber)?.intValue ?? 0,
-                         series: series?.series, seriesIndex: series?.index)
+                         rating: number("avgRating") ?? 0, ratings: Int(number("ratingsCount") ?? 0),
+                         series: series?.series, seriesIndex: series?.index,
+                         coverURL: cover.flatMap(URL.init(string:)),
+                         summary: summary?.isEmpty == false ? summary : nil)
         }
     }
 
@@ -83,7 +94,29 @@ enum GoodreadsLookup {
         return try await ask(url(title: title, author: String(surname)), title: title, authors: authors)
     }
 
+    /// The book at a place in a series, such as number 4 of "Defiance of the Fall". Nil when Goodreads has no
+    /// book listed at exactly that place in a series of that name.
+    static func volume(_ index: Double, of series: String, authors: [String]) async throws -> Match? {
+        let number = index.rounded() == index ? String(Int(index)) : String(index)
+        return volume(index, of: series, authors: authors, in: try await fetch(url(title: "\(series) #\(number)")))
+    }
+
+    static func volume(_ index: Double, of series: String, authors: [String], in matches: [Match]) -> Match? {
+        let surnames = authors.compactMap { $0.split(separator: " ").last.map { Insights.normalize(String($0)) } }
+        return matches.filter { match in
+            guard let found = match.series, Insights.normalize(found) == Insights.normalize(series),
+                  match.seriesIndex == index else { return false }
+            return surnames.isEmpty || match.author.isEmpty
+                || surnames.contains { Insights.normalize(match.author).contains($0) }
+        }
+        .max { $0.ratings < $1.ratings }
+    }
+
     private static func ask(_ url: URL, title: String, authors: [String]) async throws -> Match? {
+        best(for: title, authors: authors, in: try await fetch(url))
+    }
+
+    private static func fetch(_ url: URL) async throws -> [Match] {
         var request = URLRequest(url: url, timeoutInterval: 25)
         request.setValue("Nightstand (personal e-book library app)", forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -97,7 +130,7 @@ enum GoodreadsLookup {
         guard status == 200 else { throw Failure.refused(status) }
         // A challenge page instead of results also means "not now".
         guard data.first == UInt8(ascii: "[") else { throw Failure.refused(status) }
-        return best(for: title, authors: authors, in: parse(data))
+        return parse(data)
     }
 }
 

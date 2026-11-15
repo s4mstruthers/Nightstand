@@ -278,6 +278,16 @@ final class LibraryStore {
         }
         saveNow()
         var notes: [String] = []
+        // Wishlist books that have just arrived come off the wishlist.
+        let arrived = companion.recommendations.filter {
+            $0.state == .saved && Insights.ownedBook(title: $0.title, authors: $0.authors, in: books) != nil
+        }
+        if !arrived.isEmpty {
+            let ids = Set(arrived.map(\.id))
+            withAnimation(.snappy) { companion.recommendations.removeAll { ids.contains($0.id) } }
+            notes.append(arrived.count == 1 ? "“\(arrived[0].title)” came off your wishlist"
+                         : "\(arrived.count) came off your wishlist")
+        }
         if duplicates > 0 { notes.append("\(duplicates) already in your library") }
         if failed > 0 { notes.append("\(failed) couldn't be read") }
         activity.flash("Added \(added) book\(added == 1 ? "" : "s")",

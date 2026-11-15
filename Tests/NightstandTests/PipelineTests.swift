@@ -466,6 +466,69 @@ final class PipelineTests: XCTestCase {
         print("FONTS: \(catalogue.count) families; Lora files \(files.map { (try? Data(contentsOf: $0).count) ?? 0 })")
     }
 
+    func testDiscoverKnowsWhatYouOwnAndWhatsMissing() async throws {
+        func book(_ title: String, _ author: String, series: String? = nil, _ index: Double? = nil,
+                  _ status: ReadingStatus = .finished) -> Book {
+            var book = Book(title: title, format: .epub)
+            book.authors = [author]
+            book.series = series
+            book.seriesIndex = index
+            book.status = status
+            return book
+        }
+        let books = [
+            book("Defiance of the Fall", "TheFirstDefier", series: "Defiance of the Fall", 1),
+            book("Defiance of the Fall 3", "TheFirstDefier", series: "Defiance of the Fall", 3),
+            book("Defiance of the Fall 7", "TheFirstDefier", series: "Defiance of the Fall", 7),
+            book("Cities in Chains", "Tao Wong", series: "The System Apocalypse", 4),
+            book("The System Apocalypse Books 1-3", "Tao Wong"),
+            book("Unread Saga 2", "Someone", series: "Unread Saga", 2, .unread),
+            book("Piranesi", "Susanna Clarke"),
+        ]
+
+        // Owned, whatever the subtitle, as long as the author agrees.
+        XCTAssertEqual(Insights.ownedBook(title: "Piranesi: A Novel", authors: ["Susanna Clarke"], in: books)?.title, "Piranesi")
+        XCTAssertEqual(Insights.ownedBook(title: "Piranesi", authors: [], in: books)?.title, "Piranesi")
+        XCTAssertNil(Insights.ownedBook(title: "Piranesi", authors: ["Someone Else"], in: books))
+        XCTAssertNil(Insights.ownedBook(title: "Jonathan Strange", authors: ["Susanna Clarke"], in: books))
+
+        // Gaps before the last book owned, plus the next one; omnibus editions count, unstarted series don't.
+        let gaps = Insights.seriesGaps(books)
+        XCTAssertEqual(gaps.filter { $0.series == "Defiance of the Fall" }.map(\.index), [2, 4, 5, 6, 8])
+        XCTAssertEqual(gaps.filter { $0.series == "Defiance of the Fall" }.map(\.isNext), [false, false, false, false, true])
+        XCTAssertEqual(gaps.filter { $0.series == "The System Apocalypse" }.map(\.index), [5])
+        XCTAssertFalse(gaps.contains { $0.series == "Unread Saga" })
+
+        // Goodreads names the book at a place in a series; numbers arrive as text; thumbnails come full size.
+        let data = Data(#"""
+            [{"bookId":"59763121","title":"Defiance of the Fall 4 (Defiance of the Fall, #4)","bookTitleBare":"Defiance of the Fall 4",
+              "avgRating":"4.47","ratingsCount":"11766","author":{"name":"TheFirstDefier"},
+              "imageUrl":"https://i.gr-assets.com/images/books/1i/59763121._SY75_.jpg","description":{"html":"Just as a threat&#39;s dealt with.<br/>More."}},
+             {"bookId":"2","title":"Defiance (The Afflicted Saga, #4)","bookTitleBare":"Defiance","avgRating":"4.0",
+              "ratingsCount":"5","author":{"name":"Katika Schneider"}}]
+            """#.utf8)
+        let matches = GoodreadsLookup.parse(data)
+        XCTAssertEqual(matches.first?.ratings, 11766)
+        XCTAssertEqual(matches.first?.coverURL?.absoluteString, "https://i.gr-assets.com/images/books/1i/59763121.jpg")
+        XCTAssertEqual(matches.first?.summary, "Just as a threat's dealt with.\nMore.")
+        let volume = GoodreadsLookup.volume(4, of: "Defiance of the Fall", authors: ["TheFirstDefier"], in: matches)
+        XCTAssertEqual(volume?.id, "59763121")
+        XCTAssertNil(GoodreadsLookup.volume(5, of: "Defiance of the Fall", authors: ["TheFirstDefier"], in: matches))
+
+        // A wishlist book comes off the wishlist when its file is added.
+        let store = await LibraryStore(root: work, activity: ActivityCenter())
+        await MainActor.run {
+            store.companion.recommendations = [
+                Recommendation(title: "Original Title: A Novel", authors: ["Ada Writer"], source: "you", state: .saved),
+                Recommendation(title: "Something Else", authors: ["Ada Writer"], source: "you", state: .saved),
+            ]
+        }
+        let epub = try makeEPUB(named: "wanted.epub")
+        await store.importFiles([epub])
+        let left = await store.companion.recommendations.map(\.title)
+        XCTAssertEqual(left, ["Something Else"])
+    }
+
     func testGoodreadsLookupPicksTheRightBook() throws {
         let data = Data(#"""
             [{"bookId":"110","title":"The Road to Dune","bookTitleBare":"The Road to Dune","avgRating":"3.90",
@@ -682,6 +745,16 @@ final class PipelineTests: XCTestCase {
             XCTAssertNotNil(details.summary)
             XCTAssertNotNil(details.coverURL)
         }
+        let browsed = await MetadataLookup.browse("brandon sanderson mistborn")
+        print("BROWSE: " + browsed.candidates.prefix(8).map { "\($0.title) [\($0.source)]" }.joined(separator: " | "))
+        XCTAssertFalse(browsed.candidates.isEmpty)
+        if let books = try? LibraryIndex.load(from: LibraryStore.defaultRoot) {
+            for gap in Insights.seriesGaps(books) {
+                let match = try await GoodreadsLookup.volume(gap.index, of: gap.series, authors: gap.authors)
+                print("GAP: \(gap.series) #\(gap.index)\(gap.isNext ? " (next)" : "") -> \(match.map { "\($0.title), cover \($0.coverURL != nil)" } ?? "not found")")
+                try await Task.sleep(for: .seconds(GoodreadsLookup.pause))
+            }
+        }
     }
 
     /// Prints what the clean-up would do to a real library: `NIGHTSTAND_LIBRARY_INDEX=library.json swift test --filter RealCleanUp`
@@ -799,7 +872,7 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual((try call("reading_profile")["dismissed_suggestions"] as? [String]), ["Hyperion"])
     }
 
-    func testInsights() {
+    func testInsights() throws {
         func book(_ title: String, _ author: String, rating: Int = 0, status: ReadingStatus = .unread,
                   series: String? = nil, index: Double? = nil, tags: [String] = []) -> Book {
             var book = Book(title: title, format: .epub)
@@ -836,6 +909,20 @@ final class PipelineTests: XCTestCase {
         let old = Data(#"{"applyFormatting":true,"fontScale":120,"convertToKepub":true}"#.utf8)
         let options = try? JSONDecoder().decode(FormatOptions.self, from: old)
         XCTAssertEqual(options?.fontScale, 120)
+        XCTAssertEqual(options?.fontSizeMode, .relative)
+        XCTAssertEqual(options?.fontSizePoints, 12)
+
+        // An exact base size replaces the percentage.
+        var fixed = FormatOptions()
+        fixed.applyFormatting = true
+        fixed.fontScale = 130
+        fixed.fontSizeMode = .fixed
+        fixed.fontSizePoints = 11.5
+        let css = try XCTUnwrap(fixed.css())
+        XCTAssertTrue(css.contains("html, body { font-size: 11.5pt !important; }"))
+        XCTAssertFalse(css.contains("130%"))
+        fixed.fontSizePoints = 14
+        XCTAssertTrue(try XCTUnwrap(fixed.css()).contains("font-size: 14pt"))
         XCTAssertEqual(options?.useReaderFont, false)
         var styled = FormatOptions()
         styled.applyFormatting = true

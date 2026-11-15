@@ -23,8 +23,31 @@ struct Recommendation: Identifiable, Codable, Hashable, Sendable {
     var goodreadsRating: Double?
     var goodreadsRatings: Int?
     var goodreadsID: String?
+    /// Filled in when the book was found by searching online.
+    var coverURL: URL?
+    var summary: String?
+    var published: String?
+    var series: String?
+    var seriesIndex: Double?
 
     var authorText: String { authors.joined(separator: ", ") }
+
+    /// A wishlist entry for a book found online.
+    init(_ candidate: MetadataLookup.Candidate, source: String = "you", state: State = .saved) {
+        self.init(title: candidate.title, authors: candidate.authors, source: source, state: state)
+        coverURL = candidate.coverURL
+        summary = candidate.summary
+        published = candidate.published.map { String($0.prefix(4)) }
+    }
+
+    init(title: String, authors: [String] = [], reason: String = "", source: String = "assistant",
+         state: State = .new) {
+        self.title = title
+        self.authors = authors
+        self.reason = reason
+        self.source = source
+        self.state = state
+    }
 }
 
 /// What sits beside the books: the reader's taste in their own words, and books they might want.
@@ -167,6 +190,69 @@ enum Insights {
             loved: books.filter { $0.rating == 5 || $0.isFavourite }
                 .sorted { ($0.dateFinished ?? .distantPast) > ($1.dateFinished ?? .distantPast) },
             disliked: books.filter { ($0.rating > 0 && $0.rating <= 2) || $0.status == .abandoned })
+    }
+
+    // MARK: Owned or not
+
+    /// The book in the library with this title (with or without a subtitle) and, when both name one, an author
+    /// sharing a surname.
+    static func ownedBook(title: String, authors: [String], in books: [Book]) -> Book? {
+        func main(_ text: String) -> String {
+            let cut = text.firstIndex { $0 == ":" || $0 == "(" || $0 == "[" } ?? text.endIndex
+            return normalize(String(text[..<cut]))
+        }
+        func surnames(_ names: [String]) -> Set<String> {
+            Set(names.compactMap { $0.split(separator: " ").last.map { normalize(String($0)) } }.filter { !$0.isEmpty })
+        }
+        let wanted = Set([normalize(title), main(title)].filter { !$0.isEmpty })
+        guard !wanted.isEmpty else { return nil }
+        let theirs = surnames(authors)
+        return books.first { book in
+            guard wanted.contains(normalize(book.title)) || wanted.contains(main(book.title)) else { return false }
+            let ours = surnames(book.authors)
+            return theirs.isEmpty || ours.isEmpty || !theirs.isDisjoint(with: ours)
+        }
+    }
+
+    // MARK: Missing from a series
+
+    /// A place in a series the reader has started with no book in the library.
+    struct SeriesGap: Identifiable, Hashable, Sendable {
+        var series: String
+        var index: Double
+        var authors: [String]
+        /// True for the number after the last one owned, which may not have been written yet.
+        var isNext: Bool
+        var id: String { "\(series)#\(index)" }
+    }
+
+    /// For each series with a book finished or being read: the numbers missing before the last one owned,
+    /// and the one after it. Omnibus editions such as "Books 1-3" count for the numbers they hold.
+    static func seriesGaps(_ books: [Book], limit: Int = 8) -> [SeriesGap] {
+        let grouped = Dictionary(grouping: books.filter { $0.series?.isEmpty == false && $0.seriesIndex != nil }) {
+            $0.series ?? ""
+        }
+        var gaps: [SeriesGap] = []
+        for (series, entries) in grouped.sorted(by: { $0.key.localizedStandardCompare($1.key) == .orderedAscending }) {
+            guard entries.contains(where: { $0.status == .finished || $0.status == .reading }),
+                  let last = entries.compactMap(\.seriesIndex).max(), last < 200 else { continue }
+            var owned = Set(entries.compactMap { $0.seriesIndex.map { Int($0) } })
+            // "The System Apocalypse Books 1-3" holds 1, 2 and 3.
+            let name = normalize(series)
+            for book in books where normalize(book.title).contains(name) {
+                guard let range = book.title.range(of: #"\d+\s*[-–]\s*\d+"#, options: .regularExpression) else { continue }
+                let ends = book.title[range].split { !$0.isNumber }.compactMap { Int($0) }
+                if ends.count == 2, ends[0] < ends[1], ends[1] - ends[0] < 20 { owned.formUnion(ends[0]...ends[1]) }
+            }
+            let authors = entries.max { $0.authors.count < $1.authors.count }?.authors ?? []
+            let missing = (1..<Int(last)).filter { !owned.contains($0) }
+            var found = missing.prefix(limit).map {
+                SeriesGap(series: series, index: Double($0), authors: authors, isNext: false)
+            }
+            found.append(SeriesGap(series: series, index: Double(Int(last) + 1), authors: authors, isNext: true))
+            gaps += found
+        }
+        return gaps
     }
 
     // MARK: Next in series
