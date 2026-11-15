@@ -106,7 +106,7 @@ struct OrganiseView: View {
                              text: "Books, details and covers. Calibre is left untouched.",
                              status: nil, button: "Choose Library…") { app.importCalibre() }
                     ToolCard(symbol: "star.leadinghalf.filled", tint: .orange, title: "Import from Goodreads",
-                             text: "Your ratings, shelves and dates read, matched to the books you have.",
+                             text: "Ratings, shelves and dates read. Can add books you've read without their files.",
                              status: nil, button: "Choose File…", last: true) { app.importGoodreads() }
                 }
                 .card(padding: 6)

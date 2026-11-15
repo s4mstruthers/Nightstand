@@ -17,6 +17,11 @@ final class ActivityCenter {
         current = Activity(title: title, detail: detail, progress: progress)
     }
 
+    func clear() {
+        dismissal?.cancel()
+        current = nil
+    }
+
     /// Shows a message briefly, then clears it.
     func flash(_ title: String, detail: String? = nil) {
         dismissal?.cancel()
@@ -270,6 +275,14 @@ final class LibraryStore {
     }
 
     // MARK: Books without a file
+
+    /// Adds many books without files at once, as an import does. Saving is left to the caller.
+    func addWithoutFiles(_ added: [Book]) {
+        for book in added {
+            try? FileManager.default.createDirectory(at: folder(for: book), withIntermediateDirectories: true)
+        }
+        withAnimation(.snappy) { books.append(contentsOf: added) }
+    }
 
     /// Adds a book you've read but don't have a file for, with its cover when one is known. A wishlist entry
     /// for it comes off the wishlist.

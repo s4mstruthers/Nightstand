@@ -236,6 +236,38 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(mistborn.status, .reading)
         XCTAssertEqual(mistborn.seriesText, "Mistborn #1")
 
+        // Books that aren't in the library: read ones become books without a file, to-read ones wishes.
+        let full = """
+        Book Id,Title,Author,Additional Authors,ISBN,ISBN13,My Rating,Average Rating,Publisher,Year Published,Original Publication Year,Date Read,Date Added,Bookshelves,Exclusive Shelf,My Review
+        11,"Dune (Dune, #1)",Frank Herbert,,="0441172717",="9780441172719",5,4.28,Ace,1990,1965,2019/06/02,2019/05/01,sci-fi,read,Sand.
+        12,Dune,Frank Herbert,,="",="",5,4.28,Hodder,2015,1965,2019/06/02,2019/05/01,,read,
+        13,The Final Empire,Brandon Sanderson,,="",="",4,4.5,Tor,2006,2006,,2020/01/01,,read,
+        14,Hyperion,Dan Simmons,,="",="",0,4.27,Bantam,1990,1989,,2021/02/03,,to-read,
+        15,Piranesi,Susanna Clarke,,="",="",0,4.2,Bloomsbury,2020,2020,,2023/04/05,,currently-reading,
+        """
+        let plan = Goodreads.plan(Goodreads.parse(full), books: [mistborn])
+        XCTAssertEqual(plan.changes.keys.map { $0 }, [mistborn.id])
+        // The second edition of Dune is the same book, so it's added once.
+        XCTAssertEqual(plan.missingRead.map(\.title), ["Dune", "Piranesi"])
+        XCTAssertEqual(plan.missingToRead.map(\.title), ["Hyperion"])
+        let dune = Goodreads.book(from: plan.missingRead[0])
+        XCTAssertFalse(dune.hasFile)
+        XCTAssertEqual(dune.seriesText, "Dune #1")
+        XCTAssertEqual(dune.rating, 5)
+        XCTAssertEqual(dune.status, .finished)
+        XCTAssertEqual(dune.notes, "Sand.")
+        XCTAssertEqual(dune.tags, ["sci-fi"])
+        XCTAssertEqual(dune.published, "1965")
+        XCTAssertEqual(dune.isbn, "9780441172719")
+        XCTAssertEqual(dune.goodreadsID, "11")
+        XCTAssertEqual(dune.goodreadsRating, 4.28)
+        XCTAssertEqual(Calendar.current.component(.year, from: dune.dateAdded), 2019)
+        XCTAssertNotNil(dune.dateFinished)
+        XCTAssertEqual(Goodreads.book(from: plan.missingRead[1]).status, .reading)
+        let wish = Goodreads.wish(from: plan.missingToRead[0])
+        XCTAssertEqual(wish.state, .saved)
+        XCTAssertEqual(wish.goodreadsID, "14")
+
         XCTAssertEqual(Goodreads.titleKey("How to Win Friends & Influence People"),
                        Goodreads.titleKey("How To Win Friends and Influence People"))
         XCTAssertEqual(Goodreads.titleKey("Ritual of Ruin (King's Dark Tidings Book 7)"), "ritualofruin")
@@ -1411,7 +1443,11 @@ final class PipelineTests: XCTestCase {
         try FileManager.default.copyItem(at: URL(fileURLWithPath: index), to: work.appending(path: "library.json"))
         let store = LibraryStore(root: work, activity: ActivityCenter())
         let before = store.books
-        await store.importGoodreads(from: URL(fileURLWithPath: export))
+        let found = await store.planGoodreadsImport(from: URL(fileURLWithPath: export))
+        let plan = try XCTUnwrap(found)
+        let added = store.importGoodreads(plan, addMissing: true)
+        for book in added { print("ADDED: \(book.title) — \(book.authorText) | \(book.rating)★ | \(book.status.label)") }
+        print("WISHLIST: \(store.companion.recommendations.filter { $0.state == .saved }.count)")
         print("SUMMARY: \(store.activity.current?.title ?? "") — \(store.activity.current?.detail ?? "")")
         for (old, new) in zip(before, store.books) where old != new {
             print("UPDATED: \(new.title) | \(new.rating)★ | \(new.status.label) | \(new.seriesText)")

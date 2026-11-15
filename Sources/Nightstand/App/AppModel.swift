@@ -279,7 +279,35 @@ final class AppModel {
         panel.message = "Choose your Goodreads export. On goodreads.com: My Books → Tools → Import and export → Export Library."
         panel.prompt = "Import"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task { await store.importGoodreads(from: url) }
+        Task {
+            guard let plan = await store.planGoodreadsImport(from: url) else { return }
+            let read = plan.missingRead.count, toRead = plan.missingToRead.count
+            var addMissing = false
+            if read + toRead > 0 {
+                // Adding years of reading is a big change to the library, so it's offered, not assumed.
+                let alert = NSAlert()
+                alert.messageText = "Add the books you don't have files for?"
+                var parts: [String] = []
+                if read > 0 {
+                    parts.append("\(read) book\(read == 1 ? "" : "s") you've read or are reading on Goodreads \(read == 1 ? "isn't" : "aren't") in your library. Nightstand can add \(read == 1 ? "it" : "them") without a file, with your ratings, dates and reviews, then find covers and descriptions online.")
+                }
+                if toRead > 0 {
+                    parts.append("\(toRead) book\(toRead == 1 ? "" : "s") from your to-read shelf would go on your wishlist.")
+                }
+                alert.informativeText = parts.joined(separator: "\n\n")
+                alert.addButton(withTitle: "Add \(read + toRead) Book\(read + toRead == 1 ? "" : "s")")
+                alert.addButton(withTitle: "Only Update the Ones I Have")
+                alert.addButton(withTitle: "Cancel")
+                switch alert.runModal() {
+                case .alertFirstButtonReturn: addMissing = true
+                case .alertSecondButtonReturn: addMissing = false
+                default: return
+                }
+            }
+            let added = store.importGoodreads(plan, addMissing: addMissing)
+            // Covers and descriptions for the new books, in the background with the usual progress and Stop.
+            if !added.isEmpty { fetchDetails(for: Set(added.map(\.id))) }
+        }
     }
 
     /// Proposes tidier details for the selected books, or for the whole library when fewer than two are selected.

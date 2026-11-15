@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 /// Reads a Goodreads library export (`goodreads_library_export.csv`) and matches it to books in the library.
 enum Goodreads {
@@ -13,6 +14,25 @@ enum Goodreads {
         var dateRead: Date?
         var review: String
         var shelves: [String]
+        /// Goodreads' own number for the book, for its page there.
+        var bookID: String?
+        var publisher: String?
+        /// The year it first came out.
+        var published: String?
+        /// What Goodreads readers rate it on average.
+        var averageRating: Double?
+        var dateAdded: Date?
+    }
+
+    /// What an export would do to the library, worked out before anything changes.
+    struct Plan: Sendable {
+        var total = 0
+        /// Entries for books already in the library, by the book they match.
+        var changes: [UUID: Entry] = [:]
+        /// Read or being read on Goodreads, and not in the library.
+        var missingRead: [Entry] = []
+        /// On the to-read shelf, and not in the library.
+        var missingToRead: [Entry] = []
     }
 
     struct Summary: Sendable {
@@ -64,7 +84,13 @@ enum Goodreads {
             return Entry(title: title, series: series, seriesIndex: seriesIndex, authors: authors,
                          isbns: isbns, rating: min(5, max(0, Int((Double(value("My Rating")) ?? 0).rounded()))),
                          status: status, dateRead: dates.date(from: value("Date Read")),
-                         review: OPF.plainText(value("My Review")), shelves: shelves)
+                         review: OPF.plainText(value("My Review")), shelves: shelves,
+                         bookID: value("Book Id").isEmpty ? nil : value("Book Id"),
+                         publisher: value("Publisher").isEmpty ? nil : value("Publisher"),
+                         published: [value("Original Publication Year"), value("Year Published")]
+                             .first { !$0.isEmpty },
+                         averageRating: Double(value("Average Rating")).flatMap { $0 > 0 ? $0 : nil },
+                         dateAdded: dates.date(from: value("Date Added")))
         }
     }
 
@@ -151,6 +177,57 @@ enum Goodreads {
         return theirs.isEmpty || ours.isEmpty || !theirs.isDisjoint(with: ours)
     }
 
+    /// Sorts an export into books already in the library and books that aren't, each listed once.
+    static func plan(_ entries: [Entry], books: [Book]) -> Plan {
+        var plan = Plan(total: entries.count)
+        var seen: Set<String> = []
+        for entry in entries {
+            if let book = books.first(where: { plan.changes[$0.id] == nil && matches(entry, $0) }) {
+                plan.changes[book.id] = entry
+                continue
+            }
+            // Another edition of a book that's already matched, or listed twice in the export.
+            if books.contains(where: { matches(entry, $0) }) { continue }
+            let key = titleKey(entry.title) + "|" + nameTokens(entry.authors.prefix(1).map { $0 }).sorted().joined()
+            guard seen.insert(key).inserted else { continue }
+            if entry.status == .unread { plan.missingToRead.append(entry) } else { plan.missingRead.append(entry) }
+        }
+        return plan
+    }
+
+    /// A book you've read but have no file for, with everything the export says about it.
+    static func book(from entry: Entry) -> Book {
+        var book = Book(title: entry.title, format: .epub)
+        book.authors = entry.authors
+        book.series = entry.series
+        book.seriesIndex = entry.seriesIndex
+        book.rating = entry.rating
+        book.status = entry.status ?? .finished
+        if book.status == .finished { book.dateFinished = entry.dateRead }
+        book.notes = entry.review
+        book.tags = entry.shelves
+        book.publisher = entry.publisher
+        book.published = entry.published
+        book.isbn = entry.isbns.max { $0.count < $1.count }
+        book.goodreadsID = entry.bookID
+        book.goodreadsRating = entry.averageRating
+        // When it went on Goodreads, so years of reading don't all show as added today.
+        if let added = entry.dateAdded ?? entry.dateRead { book.dateAdded = added }
+        book.noFile = true
+        book.fileSize = 0
+        return book
+    }
+
+    /// A book from the to-read shelf, as a wishlist entry.
+    static func wish(from entry: Entry) -> Recommendation {
+        var wish = Recommendation(title: entry.title, authors: entry.authors, source: "you", state: .saved)
+        wish.series = entry.series
+        wish.seriesIndex = entry.seriesIndex
+        wish.published = entry.published
+        wish.goodreadsID = entry.bookID
+        return wish
+    }
+
     /// Fills in what Goodreads knows without overwriting anything already set in Nightstand.
     /// Returns true when the book changed.
     static func apply(_ entry: Entry, to book: inout Book) -> Bool {
@@ -174,33 +251,50 @@ enum Goodreads {
 }
 
 extension LibraryStore {
-    func importGoodreads(from url: URL) async {
+    /// Reads an export and works out what it would change. Nothing in the library changes yet.
+    func planGoodreadsImport(from url: URL) async -> Goodreads.Plan? {
         activity.set("Reading Goodreads export…")
-        let entries = await Task.detached { () -> [Goodreads.Entry] in
-            guard let data = try? Data(contentsOf: url) else { return [] }
-            return Goodreads.parse(String(decoding: data, as: UTF8.self))
+        let books = self.books
+        let plan = await Task.detached { () -> Goodreads.Plan? in
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            let entries = Goodreads.parse(String(decoding: data, as: UTF8.self))
+            return entries.isEmpty ? nil : Goodreads.plan(entries, books: books)
         }.value
-        guard !entries.isEmpty else {
+        if plan == nil {
             activity.flash("That doesn't look like a Goodreads export",
                            detail: "Choose the goodreads_library_export.csv file from Goodreads.")
-            return
+        } else {
+            activity.clear()
         }
+        return plan
+    }
 
-        var summary = Goodreads.Summary(total: entries.count)
-        var changes: [UUID: Goodreads.Entry] = [:]
-        for entry in entries {
-            guard let book = books.first(where: { changes[$0.id] == nil && Goodreads.matches(entry, $0) })
-            else { continue }
-            summary.matched += 1
-            changes[book.id] = entry
+    /// Updates the books you have from the export and, when asked, adds the ones you don't: read books
+    /// without a file, and to-read books on the wishlist. Returns the books added.
+    @discardableResult
+    func importGoodreads(_ plan: Goodreads.Plan, addMissing: Bool) -> [Book] {
+        var updated = 0
+        modify(Set(plan.changes.keys)) { book in
+            if let entry = plan.changes[book.id], Goodreads.apply(entry, to: &book) { updated += 1 }
         }
-        modify(Set(changes.keys)) { book in
-            if let entry = changes[book.id], Goodreads.apply(entry, to: &book) { summary.updated += 1 }
+        var added: [Book] = []
+        var wished = 0
+        if addMissing {
+            added = plan.missingRead.map(Goodreads.book)
+            addWithoutFiles(added)
+            withAnimation(.snappy) {
+                wished = companion.add(plan.missingToRead.map(Goodreads.wish), owned: books).count
+            }
         }
         saveNow()
-        let missing = summary.total - summary.matched
-        activity.flash("Updated \(summary.updated) book\(summary.updated == 1 ? "" : "s") from Goodreads",
-                       detail: "\(summary.matched) of \(summary.total) Goodreads books are in your library"
-                           + (missing > 0 ? " · \(missing) aren't" : ""))
+
+        var detail = ["\(updated) updated"]
+        if !added.isEmpty { detail.append("\(added.count) added without a file") }
+        if wished > 0 { detail.append("\(wished) on your wishlist") }
+        let skipped = plan.missingRead.count + plan.missingToRead.count
+        if !addMissing, skipped > 0 { detail.append("\(skipped) not in your library left out") }
+        activity.flash("Imported \(plan.total) book\(plan.total == 1 ? "" : "s") from Goodreads",
+                       detail: detail.joined(separator: " · "))
+        return added
     }
 }
