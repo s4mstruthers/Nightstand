@@ -76,6 +76,29 @@ struct SidebarView: View {
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+            if app.updater.updateAvailable, !app.updater.showSheet, let version = app.updater.release?.version {
+                Button {
+                    app.updater.showSheet = true
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.down.circle.fill")
+                        Text("Update to \(version)")
+                        Spacer()
+                    }
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 10)
+                .padding(.top, 10)
+                .help("See what's new and install it")
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             Button {
                 app.showQuickFind = true
             } label: {
@@ -94,6 +117,8 @@ struct SidebarView: View {
             .buttonStyle(.plain)
             .padding(10)
             .help("Find a book, a page or an action")
+            }
+            .animation(.snappy, value: app.updater.updateAvailable && !app.updater.showSheet)
         }
     }
 

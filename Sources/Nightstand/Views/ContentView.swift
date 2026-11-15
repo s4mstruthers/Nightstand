@@ -99,7 +99,10 @@ struct ContentView: View {
         .sheet(item: $app.cleanUp) { session in
             CleanUpSheet(proposals: session.proposals)
         }
-        .sheet(isPresented: $updater.showSheet) {
+        .sheet(isPresented: $updater.showSheet, onDismiss: {
+            // However the window was closed, the update waits a day before asking again.
+            if updater.updateAvailable, !updater.isBusy { updater.later() }
+        }) {
             UpdateSheet()
         }
         .task { app.updater.checkOnLaunch() }

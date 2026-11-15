@@ -176,11 +176,14 @@ final class Updater {
         }
     }
 
-    /// Checks at most once a day, and stays quiet unless there is something new.
+    /// Whether a newer version has been found, so a reminder can show after the window was put off.
+    var updateAvailable: Bool {
+        release.map { UpdateFeed.isNewer($0.version, than: currentVersion) } ?? false
+    }
+
+    /// Checks every time the app opens: one small request to GitHub, quiet unless there is something new.
     func checkOnLaunch() {
         guard automatic, isInstalledApp else { return }
-        let last = UserDefaults.standard.object(forKey: "lastUpdateCheck") as? Date ?? .distantPast
-        guard Date().timeIntervalSince(last) > 24 * 3600 else { return }
         Task { await check(userInitiated: false) }
     }
 
@@ -199,6 +202,12 @@ final class Updater {
                 return
             }
             if !userInitiated, UserDefaults.standard.string(forKey: "skippedVersion") == latest.version { return }
+            // After "Later", the same version doesn't pop up again that day; the sidebar reminder stays.
+            if !userInitiated, let later = postponed, later.version == latest.version,
+               Date().timeIntervalSince(later.date) < 24 * 3600 {
+                release = latest
+                return
+            }
             offer(latest)
         } catch {
             phase = .idle
@@ -216,6 +225,21 @@ final class Updater {
     func skip() {
         UserDefaults.standard.set(release?.version, forKey: "skippedVersion")
         showSheet = false
+        release = nil
+    }
+
+    /// Puts the update off: no more pop-ups for this version today, but a reminder stays in the sidebar.
+    func later() {
+        if let version = release?.version {
+            UserDefaults.standard.set(["version": version, "date": Date()], forKey: "postponedUpdate")
+        }
+        showSheet = false
+    }
+
+    private var postponed: (version: String, date: Date)? {
+        guard let saved = UserDefaults.standard.dictionary(forKey: "postponedUpdate"),
+              let version = saved["version"] as? String, let date = saved["date"] as? Date else { return nil }
+        return (version, date)
     }
 
     func openReleasePage() {

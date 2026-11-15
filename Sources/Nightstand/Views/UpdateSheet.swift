@@ -39,7 +39,7 @@ struct UpdateSheet: View {
                     Button("Skip This Version") { updater.skip() }
                 }
                 Spacer()
-                Button("Later") { updater.showSheet = false }
+                Button("Later") { updater.later() }
                     .keyboardShortcut(.cancelAction)
                     .disabled(updater.phase == .installing)
                 primaryButton(updater)
