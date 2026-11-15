@@ -231,12 +231,7 @@ private struct PopularBookSheet: View {
                         .textSelection(.enabled)
                     Text(candidate.authors.joined(separator: ", "))
                         .foregroundStyle(.secondary)
-                    Text([goodreads?.series.map { name in
-                              goodreads?.seriesIndex.map { "\(name) #\(FormatOptions.points($0))" } ?? name
-                          },
-                          candidate.tags.first,
-                          candidate.published.map { String($0.prefix(4)) }]
-                        .compactMap { $0 }.joined(separator: " · "))
+                    Text(details)
                         .font(.callout)
                         .foregroundStyle(.secondary)
                     if let goodreads, let text = goodreadsText(goodreads) {
@@ -296,6 +291,21 @@ private struct PopularBookSheet: View {
             .padding(14)
         }
         .frame(width: 620, height: 440)
+    }
+
+    /// "Series #2 · Genre · 2024"
+    private var details: String {
+        var parts: [String] = []
+        if let series = goodreads?.series {
+            if let index = goodreads?.seriesIndex {
+                parts.append("\(series) #\(FormatOptions.points(index))")
+            } else {
+                parts.append(series)
+            }
+        }
+        if let genre = candidate.tags.first { parts.append(genre) }
+        if let published = candidate.published { parts.append(String(published.prefix(4))) }
+        return parts.joined(separator: " · ")
     }
 
     /// The book as a wishlist entry, with what Goodreads knows about it.

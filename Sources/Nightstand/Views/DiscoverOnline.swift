@@ -144,6 +144,24 @@ private struct OnlineBookCard: View {
     let candidate: MetadataLookup.Candidate
     @State private var expanded = false
 
+    /// "Tao Wong · The System Apocalypse #1 · 2017 · Goodreads 4.21"
+    private var byline: String {
+        var parts: [String] = []
+        let authors = candidate.authors.joined(separator: ", ")
+        if !authors.isEmpty { parts.append(authors) }
+        if let series = candidate.series {
+            if let index = candidate.seriesIndex {
+                parts.append("\(series) #\(FormatOptions.points(index))")
+            } else {
+                parts.append(series)
+            }
+        }
+        if let published = candidate.published { parts.append(String(published.prefix(4))) }
+        if let rating = candidate.rating { parts.append(String(format: "Goodreads %.2f", rating)) }
+        if candidate.isComic { parts.append("Comic") }
+        return parts.joined(separator: " · ")
+    }
+
     var body: some View {
         let ownership = app.ownership(title: candidate.title, authors: candidate.authors)
         HStack(alignment: .top, spacing: 14) {
@@ -151,14 +169,7 @@ private struct OnlineBookCard: View {
                 .frame(width: 54)
             VStack(alignment: .leading, spacing: 4) {
                 Text(candidate.title).font(.system(.headline, design: .serif)).lineLimit(2)
-                Text([candidate.authors.joined(separator: ", "),
-                      candidate.series.map { name in
-                          candidate.seriesIndex.map { "\(name) #\(FormatOptions.points($0))" } ?? name
-                      },
-                      candidate.published.map { String($0.prefix(4)) },
-                      candidate.rating.map { String(format: "Goodreads %.2f", $0) },
-                      candidate.isComic ? "Comic" : nil]
-                    .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
+                Text(byline)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 if let summary = candidate.summary, !summary.isEmpty {

@@ -275,6 +275,21 @@ struct RecommendationCard: View {
     let recommendation: Recommendation
     var compact = false
 
+    /// "Author · Series #2 · 2021"
+    private var byline: String {
+        var parts: [String] = []
+        if !recommendation.authorText.isEmpty { parts.append(recommendation.authorText) }
+        if let series = recommendation.series {
+            if let index = recommendation.seriesIndex {
+                parts.append("\(series) #\(FormatOptions.points(index))")
+            } else {
+                parts.append(series)
+            }
+        }
+        if let published = recommendation.published, !published.isEmpty { parts.append(published) }
+        return parts.joined(separator: " · ")
+    }
+
     var body: some View {
         let ownership = app.ownership(title: recommendation.title, authors: recommendation.authors)
         HStack(alignment: .top, spacing: 14) {
@@ -289,12 +304,7 @@ struct RecommendationCard: View {
                     }
                 }
                 if !recommendation.authors.isEmpty || recommendation.series != nil {
-                    Text([recommendation.authorText,
-                          recommendation.series.map { name in
-                              recommendation.seriesIndex.map { "\(name) #\($0.rounded() == $0 ? String(Int($0)) : String($0))" } ?? name
-                          },
-                          recommendation.published]
-                        .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
+                    Text(byline)
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
