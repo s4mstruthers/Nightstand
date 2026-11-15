@@ -148,6 +148,8 @@ struct QuickFind: View {
             Item(id: "home", title: "Home", subtitle: "What you're reading and how it's going", symbol: "house") { go(.home) },
             Item(id: "discover", title: "Discover", subtitle: "Recommendations, wishlist and your taste",
                  symbol: "sparkles", keywords: "recommend next wishlist taste assistant ai") { go(.discover) },
+            Item(id: "browse", title: "Browse", subtitle: "Popular books, bestsellers by genre, and searching online",
+                 symbol: "globe", keywords: "popular bestsellers trending charts goodreads search online") { go(.browse) },
             Item(id: "journal", title: "Journal", subtitle: "Your thoughts, notes and highlights",
                  symbol: "text.book.closed", keywords: "notes highlights quotes review") { go(.journal) },
             Item(id: "organise", title: "Organise", subtitle: "Every tool for tidying your library",

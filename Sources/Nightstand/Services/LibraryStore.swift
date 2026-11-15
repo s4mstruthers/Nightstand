@@ -215,6 +215,143 @@ final class LibraryStore {
         saveNow()
     }
 
+    // MARK: Duplicates
+
+    /// Keeps one book and moves to the Trash the others, after carrying over anything recorded only on them:
+    /// the highest rating, the furthest status, notes, thoughts, highlights, tags and missing details.
+    func merge(keeping keepID: UUID, removing others: [UUID]) {
+        let extras = books.filter { others.contains($0.id) && $0.id != keepID }
+        guard book(keepID) != nil, !extras.isEmpty else { return }
+        let order: [ReadingStatus] = [.unread, .abandoned, .reading, .finished]
+        modify([keepID]) { book in
+            for other in extras {
+                book.rating = max(book.rating, other.rating)
+                if (order.firstIndex(of: other.status) ?? 0) > (order.firstIndex(of: book.status) ?? 0) {
+                    book.status = other.status
+                }
+                if !other.notes.isEmpty, !book.notes.contains(other.notes) {
+                    book.notes = book.notes.isEmpty ? other.notes : book.notes + "\n\n" + other.notes
+                }
+                if (book.liked ?? "").isEmpty { book.liked = other.liked }
+                if (book.disliked ?? "").isEmpty { book.disliked = other.disliked }
+                if other.isFavourite { book.favourite = true }
+                book.tags += other.tags.filter { !book.tags.contains($0) }
+                var highlights = book.highlights ?? []
+                for highlight in other.highlights ?? [] where !highlights.contains(where: { $0.id == highlight.id }) {
+                    highlights.append(highlight)
+                }
+                book.highlights = highlights.isEmpty ? nil : highlights
+                if book.series == nil {
+                    book.series = other.series
+                    book.seriesIndex = other.seriesIndex
+                }
+                if (book.summary ?? "").isEmpty { book.summary = other.summary }
+                book.publisher = book.publisher ?? other.publisher
+                book.published = book.published ?? other.published
+                book.isbn = book.isbn ?? other.isbn
+                book.progress = [book.progress, other.progress].compactMap { $0 }.max()
+                book.readingSeconds = [book.readingSeconds, other.readingSeconds].compactMap { $0 }.max()
+                book.lastRead = [book.lastRead, other.lastRead].compactMap { $0 }.max()
+                book.dateStarted = [book.dateStarted, other.dateStarted].compactMap { $0 }.min()
+                book.dateFinished = book.dateFinished ?? other.dateFinished
+                book.dateAdded = min(book.dateAdded, other.dateAdded)
+                if book.goodreadsID == nil {
+                    book.goodreadsID = other.goodreadsID
+                    book.goodreadsRating = other.goodreadsRating
+                    book.goodreadsRatings = other.goodreadsRatings
+                }
+            }
+        }
+        if let keep = book(keepID), !keep.hasCover,
+           let donor = extras.first(where: \.hasCover), let data = try? Data(contentsOf: coverURL(for: donor)) {
+            setCover(data, for: keepID)
+        }
+        delete(Set(extras.map(\.id)))
+    }
+
+    // MARK: Books without a file
+
+    /// Adds a book you've read but don't have a file for, with its cover when one is known. A wishlist entry
+    /// for it comes off the wishlist.
+    @discardableResult
+    func addWithoutFile(_ book: Book, cover: URL?) async -> Book {
+        var book = book
+        book.noFile = true
+        book.fileSize = 0
+        try? FileManager.default.createDirectory(at: folder(for: book), withIntermediateDirectories: true)
+        withAnimation(.snappy) {
+            books.insert(book, at: 0)
+            companion.recommendations.removeAll {
+                Insights.ownedBook(title: $0.title, authors: $0.authors, in: [book]) != nil
+            }
+        }
+        saveNow()
+        if let cover, let data = await MetadataLookup.download(cover),
+           let jpeg = ImageTools.encode(data, as: .jpeg, maxPixel: 1600),
+           (try? jpeg.write(to: coverURL(for: book), options: .atomic)) != nil {
+            modify([book.id]) {
+                $0.hasCover = true
+                $0.coverVersion += 1
+            }
+        }
+        return self.book(book.id) ?? book
+    }
+
+    /// The book without a file that a newly added file is a copy of, if any.
+    func fileless(matching book: Book) -> Book? {
+        Insights.ownedBook(title: book.title, authors: book.authors, in: books.filter { !$0.hasFile })
+    }
+
+    /// Moves a newly ingested file onto the book without a file it belongs to, keeping everything recorded
+    /// about the book and filling in only what it lacked.
+    private func attach(_ added: Book, to existing: Book) {
+        let fm = FileManager.default
+        let from = folder(for: added), to = folder(for: existing)
+        try? fm.createDirectory(at: to, withIntermediateDirectories: true)
+        let file = to.appending(path: added.fileName)
+        try? fm.removeItem(at: file)
+        try? fm.moveItem(at: from.appending(path: added.fileName), to: file)
+        let takeCover = !existing.hasCover && added.hasCover
+        if takeCover { try? fm.moveItem(at: from.appending(path: "cover.jpg"), to: coverURL(for: existing)) }
+        try? fm.removeItem(at: from)
+        modify([existing.id]) { book in
+            book.noFile = nil
+            book.format = added.format
+            book.fileSize = added.fileSize
+            if takeCover {
+                book.hasCover = true
+                book.coverVersion += 1
+            }
+            if (book.summary ?? "").isEmpty { book.summary = added.summary }
+            book.publisher = book.publisher ?? added.publisher
+            book.published = book.published ?? added.published
+            book.isbn = book.isbn ?? added.isbn
+            book.language = book.language ?? added.language
+            if book.tags.isEmpty { book.tags = added.tags }
+            if book.series == nil {
+                book.series = added.series
+                book.seriesIndex = added.seriesIndex
+            }
+            if book.authors.isEmpty { book.authors = added.authors }
+        }
+    }
+
+    /// Gives a book without a file the file chosen for it.
+    func attachFile(_ url: URL, to id: UUID) async {
+        guard let existing = book(id) else { return }
+        let destination = booksFolder
+        do {
+            let added = try await Task.detached(priority: .userInitiated) {
+                try Ingest.ingest(file: url, booksFolder: destination)
+            }.value
+            attach(added, to: existing)
+            saveNow()
+            activity.flash("Added the file to “\(existing.title)”")
+        } catch {
+            activity.flash("Couldn't add that file", detail: error.localizedDescription)
+        }
+    }
+
     // MARK: Importing
 
     private func isDuplicate(_ book: Book) -> Bool {
@@ -255,7 +392,7 @@ final class LibraryStore {
     }
 
     private func ingest(_ entries: [CalibreLibrary.Entry], title: String) async {
-        var added = 0, duplicates = 0, failed = 0
+        var added = 0, duplicates = 0, failed = 0, attached = 0
         let destination = booksFolder
         for (index, entry) in entries.enumerated() {
             activity.set(title, detail: entry.file.lastPathComponent,
@@ -265,7 +402,10 @@ final class LibraryStore {
                     try Ingest.ingest(file: entry.file, booksFolder: destination,
                                       metadata: entry.metadata, cover: entry.cover)
                 }.value
-                if isDuplicate(book) {
+                if let existing = fileless(matching: book) {
+                    attach(book, to: existing)
+                    attached += 1
+                } else if isDuplicate(book) {
                     try? FileManager.default.removeItem(at: folder(for: book))
                     duplicates += 1
                 } else {
@@ -288,6 +428,9 @@ final class LibraryStore {
             notes.append(arrived.count == 1 ? "“\(arrived[0].title)” came off your wishlist"
                          : "\(arrived.count) came off your wishlist")
         }
+        if attached > 0 {
+            notes.append(attached == 1 ? "the file was added to a book you'd read" : "\(attached) files added to books you'd read")
+        }
         if duplicates > 0 { notes.append("\(duplicates) already in your library") }
         if failed > 0 { notes.append("\(failed) couldn't be read") }
         activity.flash("Added \(added) book\(added == 1 ? "" : "s")",
@@ -297,7 +440,7 @@ final class LibraryStore {
     // MARK: Exporting
 
     func export(_ ids: Set<UUID>, to folder: URL, options: FormatOptions) async {
-        let selected = books.filter { ids.contains($0.id) }
+        let selected = books.filter { ids.contains($0.id) && $0.hasFile }
         var failed = 0
         for (index, book) in selected.enumerated() {
             activity.set("Exporting…", detail: book.title, progress: Double(index) / Double(selected.count))

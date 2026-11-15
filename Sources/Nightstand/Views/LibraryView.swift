@@ -32,8 +32,13 @@ struct LibraryView: View {
                     Image(systemName: issue.symbol).foregroundStyle(.orange)
                     Text(issue.advice).font(.callout)
                     Spacer()
+                    if issue == .missingCover, !app.isFetchingDetails {
+                        Button("Make Covers") { app.makeCovers(for: Set(books.map(\.id))) }
+                            .controlSize(.small)
+                            .help("Make a simple cover from the title and author for each of these")
+                    }
                     if issue == .missingDescription || issue == .missingCover {
-                        Button(app.isFetchingDetails ? "Stop" : "Fill In \(books.count) Online") {
+                        Button(app.isFetchingDetails ? "Stop" : "Find Online") {
                             if app.isFetchingDetails { app.cancelDetails() } else { app.fetchDetails(for: Set(books.map(\.id))) }
                         }
                         .controlSize(.small)
@@ -78,6 +83,21 @@ struct LibraryView: View {
             .font(.callout)
             .foregroundStyle(.tint)
             Spacer()
+            if !app.search.trimmingCharacters(in: .whitespaces).isEmpty {
+                Button("Save as Shelf") {
+                    var shelf = Shelf(name: app.search.trimmingCharacters(in: .whitespaces).capitalized)
+                    shelf.search = app.search
+                    if case .status(let status) = app.sidebar { shelf.status = status }
+                    if case .tag(let tag) = app.sidebar { shelf.tag = tag }
+                    if app.sidebar == .favourites { shelf.favouritesOnly = true }
+                    app.editingShelf = shelf
+                }
+                .buttonStyle(.plain)
+                .font(.callout)
+                .foregroundStyle(.tint)
+                .help("Keep this search in the sidebar")
+                .transition(.opacity)
+            }
             if app.viewMode == .grid {
                 Image(systemName: "square.grid.3x3").font(.caption).foregroundStyle(.tertiary)
                 Slider(value: $coverSize, in: 100...240)
@@ -241,6 +261,12 @@ struct BookCell: View {
                             .font(.caption2.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
+                    if !book.hasFile {
+                        Text("No file")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .help("You've read this without a file. Add one from its details.")
+                    }
                 }
                 .frame(height: 12)
             }
@@ -288,7 +314,7 @@ struct LibraryTableView: View {
             }
             .width(80)
             TableColumn("Format", value: \.format.label) { book in
-                Text(book.format.label).foregroundStyle(.secondary)
+                Text(book.hasFile ? book.format.label : "No file").foregroundStyle(.secondary)
             }
             .width(60)
             TableColumn("Added", value: \.dateAdded) { book in
@@ -313,8 +339,10 @@ struct BookMenu: View {
     var body: some View {
         let single = ids.count == 1 ? ids.first.flatMap(app.store.book) : nil
 
-        if let single {
+        if let single, single.hasFile {
             Button("Open", systemImage: "book") { app.open(single) }
+        } else if let single {
+            Button("Add File…", systemImage: "doc.badge.plus") { app.chooseFile(for: single.id) }
         }
         ForEach(app.devices.devices) { device in
             Button("Send to \(device.name)", systemImage: "arrow.up.forward.app") { app.send(ids, to: device.id) }
@@ -341,21 +369,41 @@ struct BookMenu: View {
         Button(ids.count > 1 ? "Edit Details of \(ids.count) Books…" : "Edit Details…", systemImage: "pencil") {
             app.edit(ids)
         }
-        if let single {
-            Button("Look Up Details Online…", systemImage: "globe") { app.lookingUp = single }
+        // Everything that fetches or makes details, together.
+        Menu("Details & Cover") {
+            if let single {
+                Button("Look Up Online…", systemImage: "globe") { app.lookingUp = single }
+            }
+            Button(ids.count > 1 ? "Fill In What's Missing" : "Fill In What's Missing Automatically",
+                   systemImage: "wand.and.sparkles") {
+                app.fetchDetails(for: ids, onlyMissing: ids.count > 1)
+            }
+            .disabled(app.isFetchingDetails)
+            Button(ids.count > 1 ? "Get Goodreads Ratings" : "Get Goodreads Rating", systemImage: "person.3") {
+                app.fetchGoodreads(for: ids, onlyMissing: false)
+            }
+            .disabled(app.isFetchingGoodreads)
+            if ids.count > 1 {
+                Button("Clean Up Details…", systemImage: "wand.and.stars") { app.startCleanUp() }
+            }
+            Divider()
+            if let single {
+                Button("Change Cover…", systemImage: "photo") { app.chooseCover(for: single.id) }
+            }
+            if ids.contains(where: { app.store.book($0)?.hasCover == false }) {
+                Button(ids.count > 1 ? "Make Covers for Those Without" : "Make a Cover",
+                       systemImage: "rectangle.portrait.on.rectangle.portrait") {
+                    app.makeCovers(for: ids)
+                }
+            }
         }
-        Button(ids.count > 1 ? "Fill In Missing Details Online" : "Fill In Missing Details Automatically",
-               systemImage: "wand.and.sparkles") {
-            app.fetchDetails(for: ids, onlyMissing: ids.count > 1)
+        if let single, single.hasFile, single.format.isEPUBBased {
+            Button(single.formatOverride == nil ? "Formatting for This Book…" : "Formatting for This Book (Its Own)…",
+                   systemImage: "textformat.size") {
+                app.formattingBook = BookID(id: single.id)
+            }
         }
-        .disabled(app.isFetchingDetails)
-        if let single {
-            Button("Change Cover…", systemImage: "photo") { app.chooseCover(for: single.id) }
-        }
-        Button(ids.count > 1 ? "Get Goodreads Ratings" : "Get Goodreads Rating", systemImage: "person.3") {
-            app.fetchGoodreads(for: ids, onlyMissing: false)
-        }
-        .disabled(app.isFetchingGoodreads)
+        Divider()
         Button("Show in Finder", systemImage: "folder") { app.reveal(ids) }
         Button("Export…", systemImage: "square.and.arrow.up") { app.export(ids) }
         Divider()

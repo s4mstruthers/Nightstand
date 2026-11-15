@@ -268,6 +268,8 @@ final class DeviceManager {
     // MARK: Sending
 
     func send(_ books: [Book], to deviceID: String, store: LibraryStore, options: FormatOptions) async {
+        // Books you've read without a file have nothing to send.
+        let books = books.filter(\.hasFile)
         guard let device = device(deviceID), !books.isEmpty else { return }
         var manifest = device.manifest
         var sent = 0

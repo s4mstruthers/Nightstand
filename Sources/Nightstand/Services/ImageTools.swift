@@ -19,14 +19,14 @@ enum ImageTools {
     }
 
     /// Re-encodes any image as JPEG or PNG, capped at `maxPixel` on its longest side.
-    static func encode(_ data: Data, as type: UTType, maxPixel: Int = 2000) -> Data? {
+    static func encode(_ data: Data, as type: UTType, maxPixel: Int = 2000, quality: Double = 0.9) -> Data? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let image = downsample(source, maxPixel: maxPixel) else { return nil }
         let output = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(output, type.identifier as CFString, 1, nil)
         else { return nil }
         CGImageDestinationAddImage(destination, image,
-                                   [kCGImageDestinationLossyCompressionQuality: 0.9] as CFDictionary)
+                                   [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
         return CGImageDestinationFinalize(destination) ? output as Data : nil
     }
 }

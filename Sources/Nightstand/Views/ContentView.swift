@@ -16,6 +16,7 @@ struct ContentView: View {
                 switch app.sidebar {
                 case .home: HomeView().transition(pageTransition)
                 case .discover: DiscoverView().transition(pageTransition)
+                case .browse: BrowseView().transition(pageTransition)
                 case .journal: JournalView().transition(pageTransition)
                 case .organise: OrganiseView().transition(pageTransition)
                 case .fonts: FontsView().transition(pageTransition)
@@ -83,6 +84,15 @@ struct ContentView: View {
         .sheet(item: $app.tidyingUp) { session in
             KoboTidySheet(session: session)
         }
+        .sheet(item: $app.editingShelf) { shelf in
+            ShelfEditor(shelf: shelf)
+        }
+        .sheet(isPresented: $app.showDuplicates) {
+            DuplicatesSheet()
+        }
+        .sheet(item: $app.formattingBook) { book in
+            BookFormattingSheet(bookID: book.id)
+        }
         .sheet(item: $app.lookingUp) { book in
             LookupSheet(book: book)
         }
@@ -102,7 +112,7 @@ struct ContentView: View {
         .onChange(of: app.sidebar) { old, new in
             // A book picked on Home, Discover or Journal doesn't follow you to another page, and moving between
             // lists keeps only the selected books that are in the new list, so nothing is selected out of sight.
-            let pages: [SidebarItem?] = [.home, .discover, .journal, .organise, .fonts]
+            let pages: [SidebarItem?] = [.home, .discover, .browse, .journal, .organise, .fonts]
             if pages.contains(old), pages.contains(new) {
                 app.selection = []
             } else if app.showsBooks {
@@ -116,8 +126,9 @@ struct ContentView: View {
         }
     }
 
+    /// The new page fades up while the old one leaves at once, so two pages are never seen through each other.
     private var pageTransition: AnyTransition {
-        .asymmetric(insertion: .opacity.combined(with: .offset(y: 10)), removal: .opacity)
+        .asymmetric(insertion: .opacity.combined(with: .offset(y: 8)), removal: .identity)
     }
 
     /// Changes when the page does, but not when moving between lists of books.
@@ -125,6 +136,7 @@ struct ContentView: View {
         switch app.sidebar {
         case .home: "home"
         case .discover: "discover"
+        case .browse: "browse"
         case .journal: "journal"
         case .organise: "organise"
         case .fonts: "fonts"
@@ -283,12 +295,6 @@ struct SelectionBar: View {
                 Label("Rate", systemImage: "star")
             }
             .fixedSize()
-            Button("Clean Up", systemImage: "wand.and.stars") { app.startCleanUp() }
-                .help("Suggest tidier titles, authors and series for these books")
-            Button(app.isFetchingDetails ? "Stop" : "Get Details", systemImage: app.isFetchingDetails ? "stop.circle" : "globe") {
-                if app.isFetchingDetails { app.cancelDetails() } else { app.fetchDetails(for: ids) }
-            }
-            .help("Fill in missing descriptions, covers and publishing details from Open Library and Apple Books")
             if let device = app.devices.devices.first {
                 Button("Send", systemImage: "arrow.up.forward.app") { app.send(ids, to: device.id) }
                     .help("Send to \(device.name)")

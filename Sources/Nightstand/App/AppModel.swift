@@ -3,7 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum SidebarItem: Hashable {
-    case home, discover, journal, organise, fonts
+    case home, discover, browse, journal, organise, fonts
     case favourites
     case needs(Insights.Issue)
     case all
@@ -12,6 +12,12 @@ enum SidebarItem: Hashable {
     case author(String)
     case tag(String)
     case device(String)
+    case shelf(UUID)
+}
+
+/// Identifies a book for sheets that only need its id.
+struct BookID: Identifiable, Hashable {
+    let id: UUID
 }
 
 /// The proposals being reviewed in the clean-up sheet.
@@ -57,7 +63,12 @@ final class AppModel {
     var editing: Book?
     var batchEditing: BatchEditSession?
     var lookingUp: Book?
+    /// The book whose own formatting is being set.
+    var formattingBook: BookID?
+    /// The shelf being made or changed.
+    var editingShelf: Shelf?
     var cleanUp: CleanUpSession?
+    var showDuplicates = false
     var pendingDelete: Set<UUID> = []
     var showDeleteConfirmation = false
     var showInspector = UserDefaults.standard.object(forKey: "showInspector") as? Bool ?? true {
@@ -110,7 +121,9 @@ final class AppModel {
         case .tag(let name): books = books.filter { $0.tags.contains(name) }
         case .favourites: books = books.filter(\.isFavourite)
         case .needs(let issue): books = books.filter(issue.matches)
-        case .all, .device, .home, .discover, .journal, .organise, .fonts, nil: break
+        case .shelf(let id):
+            if let shelf = store.companion.shelves.first(where: { $0.id == id }) { books = books.filter(shelf.matches) }
+        case .all, .device, .home, .discover, .browse, .journal, .organise, .fonts, nil: break
         }
         let query = search.trimmingCharacters(in: .whitespaces).lowercased()
         if !query.isEmpty { books = books.filter { $0.searchText.contains(query) } }
@@ -125,11 +138,13 @@ final class AppModel {
         case .device(let id): devices.device(id)?.name ?? "Device"
         case .home: "Home"
         case .discover: "Discover"
+        case .browse: "Browse"
         case .journal: "Journal"
         case .organise: "Organise"
         case .fonts: "Fonts"
         case .favourites: "Favourites"
         case .needs(let issue): issue.title
+        case .shelf(let id): store.companion.shelves.first { $0.id == id }?.name ?? "Shelf"
         case .all, nil: "All Books"
         }
     }
@@ -137,7 +152,7 @@ final class AppModel {
     /// True when the main area shows a list of books, as opposed to a page such as Home or a device.
     var showsBooks: Bool {
         switch sidebar {
-        case .home, .discover, .journal, .organise, .fonts, .device: false
+        case .home, .discover, .browse, .journal, .organise, .fonts, .device: false
         default: true
         }
     }
@@ -147,7 +162,7 @@ final class AppModel {
     var detailsRelevant: Bool {
         switch sidebar {
         case .fonts, .organise, .device: false
-        case .home, .discover, .journal: !selection.isEmpty
+        case .home, .discover, .browse, .journal: !selection.isEmpty
         default: true
         }
     }
@@ -640,16 +655,26 @@ final class AppModel {
     }
 
     func open(_ book: Book) {
+        guard book.hasFile else {
+            activity.flash("There's no file for “\(book.title)”", detail: "Add its file to read it. Your rating and notes stay.")
+            return
+        }
         NSWorkspace.shared.open(store.fileURL(for: book))
     }
 
     func reveal(_ ids: Set<UUID>) {
-        let urls = store.books.filter { ids.contains($0.id) }.map { store.fileURL(for: $0) }
+        let urls = store.books.filter { ids.contains($0.id) }
+            .map { $0.hasFile ? store.fileURL(for: $0) : store.folder(for: $0) }
         NSWorkspace.shared.activateFileViewerSelecting(urls)
     }
 
     func send(_ ids: Set<UUID>, to deviceID: String) {
         let books = store.books.filter { ids.contains($0.id) }
+        let withoutFile = books.count { !$0.hasFile }
+        if withoutFile == books.count {
+            activity.flash(books.count == 1 ? "There's no file to send" : "None of these have a file to send")
+            return
+        }
         Task { await devices.send(books, to: deviceID, store: store, options: settings.format) }
     }
 
@@ -670,6 +695,32 @@ final class AppModel {
         panel.message = "Choose a cover image"
         guard panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) else { return }
         store.setCover(data, for: id)
+    }
+
+    /// Makes a cover from the title and author for each of these books that has none.
+    func makeCovers(for ids: Set<UUID>) {
+        let books = store.books.filter { ids.contains($0.id) && !$0.hasCover }
+        guard !books.isEmpty else {
+            activity.flash("These books already have covers")
+            return
+        }
+        for book in books {
+            guard let data = GeneratedCover.render(book) else { continue }
+            try? FileManager.default.createDirectory(at: store.folder(for: book), withIntermediateDirectories: true)
+            store.setCover(data, for: book.id)
+        }
+        activity.flash("Made \(books.count) cover\(books.count == 1 ? "" : "s")",
+                       detail: "Change any of them by dropping an image on the cover.")
+    }
+
+    /// Lets the user pick the file for a book they've read without one.
+    func chooseFile(for id: UUID) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = Ingest.supportedExtensions.compactMap { UTType(filenameExtension: $0) }
+        panel.message = "Choose the book's file. Your rating, status and notes stay as they are."
+        panel.prompt = "Add File"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await store.attachFile(url, to: id) }
     }
 
     func requestDelete(_ ids: Set<UUID>) {

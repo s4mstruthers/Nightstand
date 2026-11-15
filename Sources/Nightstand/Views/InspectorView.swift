@@ -236,7 +236,15 @@ private struct BookInspector: View {
 
     private func actions(_ book: Book) -> some View {
         HStack(spacing: 8) {
-            ForEach(app.devices.devices.prefix(1)) { device in
+            if !book.hasFile {
+                Button {
+                    app.chooseFile(for: id)
+                } label: {
+                    Label("Add File…", systemImage: "doc.badge.plus").frame(maxWidth: .infinity)
+                }
+                .help("You've read this without a file. Add one to read it again or send it to your e-reader.")
+            }
+            ForEach(app.devices.devices.prefix(book.hasFile ? 1 : 0)) { device in
                 Button {
                     app.send([id], to: device.id)
                 } label: {
@@ -264,8 +272,15 @@ private struct BookInspector: View {
 
     private func details(_ book: Book) -> some View {
         Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 6) {
-            detail("Format", book.format.label)
-            detail("Size", ByteCountFormatter.string(fromByteCount: book.fileSize, countStyle: .file))
+            if book.formatOverride != nil {
+                detail("Formatting", "Its own")
+            }
+            if book.hasFile {
+                detail("Format", book.format.label)
+                detail("Size", ByteCountFormatter.string(fromByteCount: book.fileSize, countStyle: .file))
+            } else {
+                detail("File", "None, read elsewhere")
+            }
             detail("Added", book.dateAdded.formatted(date: .abbreviated, time: .omitted))
             if let started = book.dateStarted {
                 detail("Started", started.formatted(date: .abbreviated, time: .omitted))
@@ -419,12 +434,6 @@ private struct MultipleSelectionInspector: View {
                     app.edit(ids)
                 } label: {
                     Label("Edit Details…", systemImage: "pencil").frame(maxWidth: .infinity)
-                }
-                Button {
-                    if app.isFetchingDetails { app.cancelDetails() } else { app.fetchDetails(for: ids) }
-                } label: {
-                    Label(app.isFetchingDetails ? "Stop Getting Details" : "Fill In Missing Details Online",
-                          systemImage: "globe").frame(maxWidth: .infinity)
                 }
                 Menu {
                     ForEach(ReadingStatus.allCases) { status in

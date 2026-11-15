@@ -527,6 +527,219 @@ final class PipelineTests: XCTestCase {
         await store.importFiles([epub])
         let left = await store.companion.recommendations.map(\.title)
         XCTAssertEqual(left, ["Something Else"])
+
+        // A book read without a file: on the shelf, off the wishlist, and its file joins it later.
+        var read = Book(title: "Original Title", format: .epub)
+        read.authors = ["Ada Writer"]
+        read.status = .finished
+        read.rating = 5
+        read.series = "Kept Series"
+        read.seriesIndex = 3
+        await MainActor.run {
+            store.delete(Set(store.books.map(\.id)))
+            store.companion.recommendations = [
+                Recommendation(title: "Original Title", authors: ["Ada Writer"], source: "you", state: .saved)]
+        }
+        let added = await store.addWithoutFile(read, cover: nil)
+        XCTAssertFalse(added.hasFile)
+        let wishlistAfterRead = await store.companion.recommendations.count
+        XCTAssertEqual(wishlistAfterRead, 0)
+        await store.importFiles([try makeEPUB(named: "later.epub")])
+        let shelf = await store.books
+        XCTAssertEqual(shelf.count, 1)
+        let joined = try XCTUnwrap(shelf.first)
+        XCTAssertEqual(joined.id, added.id)
+        XCTAssertTrue(joined.hasFile)
+        XCTAssertEqual(joined.rating, 5)
+        XCTAssertEqual(joined.status, .finished)
+        XCTAssertEqual(joined.series, "Kept Series")
+        XCTAssertEqual(joined.summary, "A fine book.")
+        XCTAssertTrue(joined.hasCover)
+        let file = await store.fileURL(for: joined)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func testShelves() throws {
+        var a = Book(title: "Red Rising", format: .epub)
+        a.authors = ["Pierce Brown"]; a.tags = ["Sci-Fi"]; a.rating = 5; a.status = .finished
+        var b = Book(title: "Golden Son", format: .epub)
+        b.authors = ["Pierce Brown"]; b.tags = ["Sci-Fi"]; b.status = .unread
+        var c = Book(title: "Emma", format: .epub)
+        c.authors = ["Jane Austen"]; c.status = .unread
+        var shelf = Shelf(name: "Unread sci-fi")
+        shelf.status = .unread
+        shelf.tag = "Sci-Fi"
+        XCTAssertEqual([a, b, c].filter(shelf.matches).map(\.title), ["Golden Son"])
+        var loved = Shelf(name: "Loved Brown")
+        loved.search = "brown"
+        loved.minimumRating = 4
+        XCTAssertEqual([a, b, c].filter(loved.matches).map(\.title), ["Red Rising"])
+
+        // Saved with the companion, and older companion files without shelves still load.
+        var companion = Companion()
+        companion.shelves = [shelf]
+        let data = try JSONEncoder().encode(companion)
+        XCTAssertEqual(try JSONDecoder().decode(Companion.self, from: data).shelves, [shelf])
+        XCTAssertEqual(try JSONDecoder().decode(Companion.self, from: Data("{}".utf8)).shelves, [])
+    }
+
+    @MainActor
+    func testDuplicatesAreFoundAndMerged() throws {
+        var all: [Book] = []
+        func add(_ title: String, _ author: String, file: Bool = true, rating: Int = 0, status: ReadingStatus = .unread,
+                 notes: String = "") -> Book {
+            var book = Book(title: title, format: .epub)
+            book.authors = [author]
+            book.rating = rating
+            book.status = status
+            book.notes = notes
+            book.noFile = file ? nil : true
+            all.append(book)
+            return book
+        }
+        let kept = add("Dune", "Frank Herbert")
+        let other = add("Dune (Dune #1)", "Herbert, Frank", file: false, rating: 5, status: .finished, notes: "Loved it")
+        _ = add("Dune", "Someone Else")
+        _ = add("Emma", "Jane Austen")
+        try LibraryIndex.save(all, to: work)
+        let store = LibraryStore(root: work, activity: ActivityCenter())
+        let groups = Insights.duplicates(store.books)
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(groups[0].map(\.id), [kept.id, other.id], "the copy with a file comes first")
+
+        store.merge(keeping: kept.id, removing: [other.id])
+        XCTAssertNil(store.book(other.id))
+        let merged = try XCTUnwrap(store.book(kept.id))
+        XCTAssertEqual(merged.rating, 5)
+        XCTAssertEqual(merged.status, .finished)
+        XCTAssertEqual(merged.notes, "Loved it")
+        XCTAssertTrue(Insights.duplicates(store.books).isEmpty)
+    }
+
+    @MainActor
+    func testGeneratedCover() throws {
+        var book = Book(title: "The Cost of Survival", format: .epub)
+        book.authors = ["Tao Wong"]
+        book.series = "The System Apocalypse"
+        book.seriesIndex = 3
+        let data = try XCTUnwrap(GeneratedCover.render(book))
+        let image = try XCTUnwrap(NSImage(data: data))
+        XCTAssertEqual(image.representations.first?.pixelsHigh, 1800)
+        if let folder = ProcessInfo.processInfo.environment["NIGHTSTAND_SNAPSHOTS"] {
+            try data.write(to: URL(fileURLWithPath: folder).appending(path: "generated-cover.jpg"))
+        }
+    }
+
+    func testPolishingBooks() throws {
+        // Punctuation, carried across the edges of text runs.
+        var previous: Character?
+        XCTAssertEqual(TextTidy.smarten(#"He said "it's fine" -- then 'left'... "#, after: &previous),
+                       "He said \u{201C}it\u{2019}s fine\u{201D} \u{2014} then \u{2018}left\u{2019}\u{2026} ")
+        previous = "a"
+        XCTAssertEqual(TextTidy.smarten(#"" end"#, after: &previous), "\u{201D} end")
+
+        let chapter = Data("""
+            <?xml version="1.0" encoding="utf-8"?>
+            <html xmlns="http://www.w3.org/1999/xhtml"><head><title>One</title></head>
+            <body><h1>Chapter&nbsp;One</h1><p>"Hi," she said.</p><p>&nbsp;</p><p><br/></p><p><img src="a.png"/></p>
+            <pre>"code"</pre></body></html>
+            """.utf8)
+        let tidied = try XCTUnwrap(TextTidy.tidy(chapter, smartPunctuation: true, removeBlankParagraphs: true))
+        let text = try XCTUnwrap(String(data: tidied, encoding: .utf8))
+        XCTAssertTrue(text.contains("\u{201C}Hi,\u{201D} she said."))
+        XCTAssertTrue(text.contains("\"code\""), "code is left alone")
+        XCTAssertEqual(text.components(separatedBy: "<p>").count + text.components(separatedBy: "<p ").count - 2, 2,
+                       "the two empty paragraphs go, the picture stays")
+        XCTAssertNil(TextTidy.tidy(Data("<html><body><p>Plain.</p></body></html>".utf8), smartPunctuation: true,
+                                   removeBlankParagraphs: true))
+
+        // A book with no table of contents gets one from its headings when sent.
+        let epub = try ExtractedEPUB(extracting: try makeEPUB(named: "toc.epub"))
+        defer { epub.cleanup() }
+        XCTAssertEqual(epub.contentsEntries, 0)
+        XCTAssertFalse(epub.repairContents(title: "T"), "one chapter isn't enough for a contents")
+        let second = epub.opfDirectory.appending(path: "text/ch2.xhtml")
+        try Data(#"<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>2</title></head><body><h2>The Second</h2><p>x</p></body></html>"#.utf8).write(to: second)
+        let manifest = try XCTUnwrap(epub.package?.child("manifest"))
+        let item = XMLElement(name: "item")
+        item.setAttr("id", "ch2"); item.setAttr("href", "text/ch2.xhtml"); item.setAttr("media-type", "application/xhtml+xml")
+        manifest.addChild(item)
+        let ref = XMLElement(name: "itemref"); ref.setAttr("idref", "ch2")
+        epub.package?.child("spine")?.addChild(ref)
+        XCTAssertEqual(epub.headings().map(\.title), ["Chapter One", "The Second"])
+        XCTAssertTrue(epub.repairContents(title: "T"))
+        XCTAssertEqual(epub.contentsEntries, 2)
+        XCTAssertEqual(epub.package?.child("spine")?.attr("toc"), "nightstand-ncx")
+
+        // Big pictures shrink, keeping their name and type.
+        let image = NSImage(size: NSSize(width: 3000, height: 4000))
+        image.lockFocus(); NSColor.red.setFill(); NSRect(x: 0, y: 0, width: 3000, height: 4000).fill(); image.unlockFocus()
+        let big = try XCTUnwrap(ImageTools.encode(try XCTUnwrap(image.tiffRepresentation), as: .png, maxPixel: 4000))
+        let cover = epub.opfDirectory.appending(path: "images/cover.png")
+        try big.write(to: cover)
+        XCTAssertGreaterThan(epub.shrinkImages(), 0)
+        let shrunk = try XCTUnwrap(NSImage(contentsOf: cover))
+        XCTAssertLessThanOrEqual(max(shrunk.representations[0].pixelsWide, shrunk.representations[0].pixelsHigh), 1600)
+
+        // The new options load from settings saved before they existed, and old "no margins" carries over.
+        let old = try JSONDecoder().decode(FormatOptions.self, from: Data(#"{"removeMargins":true}"#.utf8))
+        XCTAssertEqual(old.margins, .none)
+        XCTAssertFalse(old.smartenPunctuation)
+        var custom = FormatOptions()
+        custom.applyFormatting = true
+        custom.margins = .custom
+        custom.marginSize = 2
+        XCTAssertTrue(custom.css()?.contains("margin: 0 2.0em") == true)
+
+        // A book's own formatting is used instead of the usual settings.
+        let library = work.appending(path: "Books")
+        var book = try Ingest.ingest(file: try makeEPUB(named: "own.epub"), booksFolder: library)
+        var own = FormatOptions()
+        own.applyFormatting = true
+        own.fontSizeMode = .fixed
+        own.fontSizePoints = 15
+        book.formatOverride = own
+        let built = try BookBuilder.build(book: book, source: library.appending(path: book.id.uuidString).appending(path: book.fileName),
+                                          customCover: nil, options: FormatOptions(), profile: .export)
+        defer { try? FileManager.default.removeItem(at: built.deletingLastPathComponent()) }
+        let css = try XCTUnwrap(String(data: try EPUBReader.entry("OEBPS/nightstand.css", in: built), encoding: .utf8))
+        XCTAssertTrue(css.contains("15pt"))
+    }
+
+    func testPopularBooks() throws {
+        let chart = Data(#"""
+            {"feed":{"entry":[{"im:name":{"label":"Red Rising"},"im:artist":{"label":"Pierce Brown"},
+              "summary":{"label":"NEW YORK TIMES BESTSELLER &#8226; A debut."},
+              "im:image":[{"label":"https://is1-ssl.mzstatic.com/a/9780345539793.jpg/0x53bb.png"},
+                          {"label":"https://is1-ssl.mzstatic.com/a/9780345539793.jpg/0x170bb.png"}],
+              "id":{"label":"https://books.apple.com/us/book/red-rising/id578010311","attributes":{"im:id":"578010311"}},
+              "link":{"attributes":{"href":"https://books.apple.com/us/book/red-rising/id578010311?uo=2"}},
+              "category":{"attributes":{"label":"Adventure Sci-Fi"}},"im:releaseDate":{"label":"2014-01-28T00:00:00-07:00"}},
+             {"im:name":{"label":"1984: The Graphic Novel"},"im:artist":{"label":"George Orwell & Fido Nesti"},
+              "category":{"attributes":{"label":"Comics & Graphic Novels"}}}]}}
+            """#.utf8)
+        let books = try XCTUnwrap(PopularBooks.parseAppleChart(chart))
+        XCTAssertEqual(books.map(\.title), ["Red Rising", "1984: The Graphic Novel"])
+        XCTAssertEqual(books[0].coverURL?.absoluteString, "https://is1-ssl.mzstatic.com/a/9780345539793.jpg/600x900bb.jpg")
+        XCTAssertEqual(books[0].summary, "NEW YORK TIMES BESTSELLER \u{2022} A debut.")
+        XCTAssertEqual(books[0].published, "2014-01-28")
+        XCTAssertEqual(books[0].tags, ["Adventure Sci-Fi"])
+        XCTAssertEqual(books[0].link?.host(), "books.apple.com")
+        XCTAssertEqual(books[1].authors, ["George Orwell", "Fido Nesti"])
+        XCTAssertTrue(books[1].isComic)
+        // A chart of one comes as a lone entry rather than a list.
+        let single = Data(#"{"feed":{"entry":{"im:name":{"label":"Only"},"im:artist":{"label":"A. Writer"}}}}"#.utf8)
+        XCTAssertEqual(PopularBooks.parseAppleChart(single)?.map(\.title), ["Only"])
+
+        let trending = Data(#"{"works":[{"key":"/works/OL1W","title":"Atomic Habits","author_name":["James Clear"],"first_publish_year":2016,"cover_i":12539702}]}"#.utf8)
+        let work = try XCTUnwrap(PopularBooks.parseOpenLibraryTrending(trending)?.first)
+        XCTAssertEqual(work.coverURL?.absoluteString, "https://covers.openlibrary.org/b/id/12539702-L.jpg")
+        XCTAssertEqual(work.link?.absoluteString, "https://openlibrary.org/works/OL1W")
+
+        XCTAssertEqual(GoodreadsLookup.link(id: "123", title: "X", authors: []).absoluteString,
+                       "https://www.goodreads.com/book/show/123")
+        XCTAssertEqual(GoodreadsLookup.link(title: "Red Rising", authors: ["Pierce Brown"]).absoluteString,
+                       "https://www.goodreads.com/search?q=Red%20Rising%20Pierce%20Brown")
     }
 
     func testGoodreadsLookupPicksTheRightBook() throws {
@@ -724,6 +937,18 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(third.tags, ["Fantasy"])
         XCTAssertEqual(third.coverURL?.absoluteString, "https://is1.mzstatic.com/a/b.jpg/1200x1200bb.jpg")
 
+        // Merging: one entry per book, gaps filled from later sources, comics after books unless asked for.
+        var comic = MetadataLookup.Candidate(id: "c", source: "Apple Books", title: "The Saga Issue 1", authors: ["Ann Author"])
+        comic.isComic = true
+        let novel = MetadataLookup.Candidate(id: "g", source: "Goodreads", title: "Saga Begins", authors: ["Ann Author"], series: "The Saga", seriesIndex: 1)
+        var sameNovel = MetadataLookup.Candidate(id: "a", source: "Apple Books", title: "Saga Begins: A Novel", authors: ["Ann Author"])
+        sameNovel.summary = "It begins."
+        let merged = MetadataLookup.merge([], [comic, sameNovel], [], query: "saga")
+        XCTAssertEqual(MetadataLookup.merge([novel], [comic, sameNovel], query: "saga").map(\.id), ["g", "c"])
+        XCTAssertEqual(MetadataLookup.merge([novel], [comic, sameNovel], query: "saga").first?.summary, "It begins.")
+        XCTAssertEqual(merged.map(\.id), ["a", "c"])
+        XCTAssertEqual(MetadataLookup.merge([comic, sameNovel], query: "saga comic").map(\.id), ["c", "a"])
+
         // Only results that are the same book are used: same title, ignoring a subtitle, and the author's surname.
         let candidates = [third, first, second,
                           MetadataLookup.Candidate(id: "x", source: "", title: "Piranesi: A Study Guide",
@@ -744,6 +969,14 @@ final class PipelineTests: XCTestCase {
             print("DETAILS: \(title) | cover \(details.coverURL?.absoluteString ?? "-") | \(details.publisher ?? "-") | \(details.published ?? "-") | \(details.isbn ?? "-") | \(details.tags) | \(details.summary?.prefix(80) ?? "-")")
             XCTAssertNotNil(details.summary)
             XCTAssertNotNil(details.coverURL)
+        }
+        let series = await MetadataLookup.browse("System apocalypse")
+        print("SERIES: " + series.candidates.prefix(8).map { "\($0.title) #\($0.seriesIndex ?? 0) [\($0.source)]\($0.isComic ? " comic" : "")" }.joined(separator: " | "))
+        XCTAssertEqual(series.candidates.first?.title, "Life in the North")
+        for chart in PopularBooks.charts {
+            let list = await PopularBooks.load(chart, store: "gb", limit: 5)
+            print("CHART \(chart.title): " + (list?.map { "\($0.title) (\($0.coverURL != nil ? "cover" : "no cover"))" }.joined(separator: " | ") ?? "FAILED"))
+            XCTAssertFalse(list?.isEmpty ?? true, chart.title)
         }
         let browsed = await MetadataLookup.browse("brandon sanderson mistborn")
         print("BROWSE: " + browsed.candidates.prefix(8).map { "\($0.title) [\($0.source)]" }.joined(separator: " | "))

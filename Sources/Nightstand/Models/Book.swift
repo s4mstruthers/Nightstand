@@ -77,6 +77,10 @@ struct Book: Identifiable, Codable, Hashable, Sendable {
     var goodreadsChecked: Date?
     /// When missing details were last filled in from Open Library and Apple Books.
     var detailsChecked: Date?
+    /// True for a book you've read but have no file for. Its file can be added later.
+    var noFile: Bool?
+    /// Formatting used for this book instead of the usual settings, when it needs its own.
+    var formatOverride: FormatOptions?
     var dateAdded = Date()
     var dateStarted: Date?
     var dateFinished: Date?
@@ -114,6 +118,7 @@ struct Book: Identifiable, Codable, Hashable, Sendable {
     }
 
     var isFavourite: Bool { favourite == true }
+    var hasFile: Bool { noFile != true }
 
     /// True when the reader has written anything about the book.
     var hasThoughts: Bool {
@@ -216,7 +221,7 @@ extension Book {
 }
 
 /// Options applied to EPUBs when they are sent to a device or exported.
-struct FormatOptions: Codable, Equatable, Sendable {
+struct FormatOptions: Codable, Hashable, Sendable {
     enum Alignment: String, Codable, CaseIterable, Identifiable, Sendable {
         case publisher, justified, left
         var id: String { rawValue }
@@ -268,7 +273,30 @@ struct FormatOptions: Codable, Equatable, Sendable {
     var lineHeight: Double = 1.4
     var alignment: Alignment = .publisher
     var paragraphStyle: ParagraphStyle = .publisher
+    /// Takes the page margins away entirely. Kept for settings saved by earlier versions; see `margins`.
     var removeMargins = false
+    enum Margins: String, Codable, CaseIterable, Identifiable, Sendable {
+        case publisher, none, custom
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .publisher: "Publisher Default"
+            case .none: "None"
+            case .custom: "Choose"
+            }
+        }
+    }
+    var margins: Margins = .publisher
+    /// Side margins in em when `margins` is `.custom`.
+    var marginSize: Double = 1.5
+    /// Curly quotes, real dashes and ellipses, like Calibre's "Smarten punctuation".
+    var smartenPunctuation = false
+    /// Takes out empty paragraphs used as spacing.
+    var removeBlankParagraphs = false
+    /// Scales down big images and, with the e-reader's font chosen, drops embedded fonts.
+    var shrinkImages = false
+    /// Builds a table of contents from the chapter headings when a book has none.
+    var fixContents = false
     var hyphenate = false
     /// Drops the publisher's fonts, so the font chosen on the e-reader is used throughout.
     var useReaderFont = false
@@ -294,6 +322,12 @@ struct FormatOptions: Codable, Equatable, Sendable {
         alignment = value(.alignment, .publisher)
         paragraphStyle = value(.paragraphStyle, .publisher)
         removeMargins = value(.removeMargins, false)
+        margins = value(.margins, removeMargins ? .none : .publisher)
+        marginSize = value(.marginSize, 1.5)
+        smartenPunctuation = value(.smartenPunctuation, false)
+        removeBlankParagraphs = value(.removeBlankParagraphs, false)
+        shrinkImages = value(.shrinkImages, false)
+        fixContents = value(.fixContents, false)
         hyphenate = value(.hyphenate, false)
         useReaderFont = value(.useReaderFont, false)
         extraCSS = value(.extraCSS, "")
@@ -335,8 +369,14 @@ struct FormatOptions: Codable, Equatable, Sendable {
         case .spaced:
             rules.append("p { margin-top: 0 !important; margin-bottom: 0.7em !important; text-indent: 0 !important; }")
         }
-        if removeMargins {
+        switch margins {
+        case .publisher: break
+        case .none:
             rules.append("body { margin: 0 !important; padding: 0 !important; }")
+            rules.append("@page { margin: 0; }")
+        case .custom:
+            let size = String(format: "%.1f", marginSize)
+            rules.append("body { margin: 0 \(size)em !important; padding: 0 !important; }")
             rules.append("@page { margin: 0; }")
         }
         if hyphenate {

@@ -112,6 +112,13 @@ enum GoodreadsLookup {
         .max { $0.ratings < $1.ratings }
     }
 
+    /// What Goodreads' search box suggests for some words: the books people most likely mean.
+    static func search(_ query: String) async throws -> [Match] {
+        var components = URLComponents(string: "https://www.goodreads.com/book/auto_complete")!
+        components.queryItems = [URLQueryItem(name: "format", value: "json"), URLQueryItem(name: "q", value: query)]
+        return try await fetch(components.url!)
+    }
+
     private static func ask(_ url: URL, title: String, authors: [String]) async throws -> Match? {
         best(for: title, authors: authors, in: try await fetch(url))
     }

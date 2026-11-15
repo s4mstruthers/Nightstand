@@ -37,38 +37,35 @@ struct OrganiseView: View {
                 SectionHeading("Tidy Up", symbol: "wand.and.stars")
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 290), spacing: 14)], spacing: 14) {
                     ToolCard(symbol: "wand.and.stars", tint: .purple, title: "Clean Up Details",
-                             text: "Fixes author names written backwards, trims long titles and spots series, across the whole library. You see every change and untick any you don't want.",
+                             text: "Fixes backwards author names, long titles and missed series. You approve every change.",
                              status: suggestions.map { $0 == 0 ? "Nothing to clean up" : "\($0) suggestion\($0 == 1 ? "" : "s")" },
                              button: "Review Suggestions", disabled: suggestions == 0) {
                         app.startCleanUp(wholeLibrary: true)
                     }
-                    ToolCard(symbol: "square.stack.3d.up", tint: .blue, title: "Edit Several Books at Once",
-                             text: "Select two or more books in the library (⌘-click or shift-click). A bar appears at the bottom: choose Edit Details to change the author, series, tags, rating or status for all of them.",
-                             status: nil, button: "Go to All Books") {
-                        withAnimation(.snappy) { app.sidebar = .all }
+                    let duplicates = Insights.duplicates(books).count
+                    ToolCard(symbol: "plus.square.on.square", tint: .pink, title: "Duplicates",
+                             text: "Books added more than once, merged into one copy without losing ratings or notes.",
+                             status: duplicates == 0 ? "None found" : "\(duplicates) found",
+                             button: "Review Duplicates", disabled: duplicates == 0) {
+                        app.showDuplicates = true
                     }
-                    ToolCard(symbol: "textformat.size", tint: .indigo, title: "Format Books",
-                             text: "Choose the font size, line spacing, alignment and margins your books get when they're sent to an e-reader, like Calibre's conversion settings. Your library copies stay as they are.",
-                             status: app.settings.format.applyFormatting ? "On" : "Off", button: "Formatting Options…") {
-                        app.showFormatting = true
+                    ToolCard(symbol: "globe", tint: .teal, title: "Fill In Details Online",
+                             text: "Missing descriptions, covers and dates, from Open Library and Apple Books. Only fills gaps.",
+                             status: "\(books.count(where: AppModel.lacksDetails)) to fill in",
+                             button: app.isFetchingDetails ? "Stop" : "Fill In",
+                             disabled: !app.isFetchingDetails && !books.contains(where: AppModel.lacksDetails)) {
+                        if app.isFetchingDetails { app.cancelDetails() } else { app.fetchDetails(for: Set(books.map(\.id))) }
                     }
                     ToolCard(symbol: "person.3", tint: .brown, title: "Goodreads Ratings",
-                             text: "Looks each book up on Goodreads for what its readers rate it and how many rated it, and fills in missing series. One book at a time, gently, so a whole library takes a minute or two.",
+                             text: "What Goodreads readers rate each book, and any missing series.",
                              status: "\(books.count { $0.goodreadsRating != nil }) of \(books.count)",
                              button: app.isFetchingGoodreads ? "Stop" : "Get Ratings") {
                         if app.isFetchingGoodreads { app.cancelGoodreads() } else { app.fetchGoodreads(for: Set(books.map(\.id))) }
                     }
-                    ToolCard(symbol: "textformat", tint: .mint, title: "Fonts",
-                             text: "Browse 1,900 free fonts from Google, see how a page looks in each on an e-reader, and install the ones you like on your Kobo with one click.",
-                             status: nil, button: "Browse Fonts") {
-                        withAnimation(.snappy) { app.sidebar = .fonts }
-                    }
-                    ToolCard(symbol: "globe", tint: .teal, title: "Fill In Details Online",
-                             text: "Finds missing descriptions, covers, publication dates and genres on Open Library and Apple Books, for every book at once. Only fills gaps: nothing you've written is replaced. To choose a match yourself, select one book and press ⌘L.",
-                             status: "\(books.count(where: AppModel.lacksDetails)) missing something",
-                             button: app.isFetchingDetails ? "Stop" : "Fill In Missing Details",
-                             disabled: !app.isFetchingDetails && !books.contains(where: AppModel.lacksDetails)) {
-                        if app.isFetchingDetails { app.cancelDetails() } else { app.fetchDetails(for: Set(books.map(\.id))) }
+                    ToolCard(symbol: "textformat.size", tint: .indigo, title: "Format Books",
+                             text: "Font size, spacing, margins and tidying for books sent to your e-reader.",
+                             status: app.settings.format.applyFormatting ? "On" : "Off", button: "Formatting Options…") {
+                        app.showFormatting = true
                     }
                 }
             }
@@ -78,13 +75,13 @@ struct OrganiseView: View {
                 SectionHeading("Bring Books In", symbol: "tray.and.arrow.down")
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 290), spacing: 14)], spacing: 14) {
                     ToolCard(symbol: "plus", tint: .green, title: "Add Books",
-                             text: "Add EPUB, PDF, MOBI and other book files, or whole folders. You can also drop them anywhere on the window.",
+                             text: "EPUB, PDF, MOBI and more, or whole folders. You can also drop them on the window.",
                              status: nil, button: "Add Books…") { app.addBooks() }
                     ToolCard(symbol: "books.vertical", tint: .brown, title: "Import from Calibre",
-                             text: "Copies every book in your Calibre library with its details and cover. Calibre itself is left untouched.",
+                             text: "Copies your Calibre books with their details and covers. Calibre is left untouched.",
                              status: nil, button: "Choose Calibre Library…") { app.importCalibre() }
                     ToolCard(symbol: "star.leadinghalf.filled", tint: .orange, title: "Import from Goodreads",
-                             text: "Brings in your ratings, shelves and dates read from a Goodreads export, matched to books you already have.",
+                             text: "Your ratings, shelves and dates read, matched to the books you have.",
                              status: nil, button: "Choose Export File…") { app.importGoodreads() }
                 }
             }

@@ -161,3 +161,63 @@ struct Chip: View {
             .background(.quaternary.opacity(0.6), in: Capsule())
     }
 }
+
+/// A full-size cover made for a book that has none: a calm colour from the title, with the title, series and
+/// author set in type. Rendered to an image and saved as the book's cover.
+struct GeneratedCover: View {
+    let book: Book
+
+    private var hue: Double {
+        Double(book.title.unicodeScalars.reduce(7) { ($0 &* 31 &+ Int($1.value)) % 360 }) / 360
+    }
+
+    var body: some View {
+        ZStack {
+            LinearGradient(colors: [Color(hue: hue, saturation: 0.42, brightness: 0.5),
+                                    Color(hue: hue, saturation: 0.55, brightness: 0.24)],
+                           startPoint: .top, endPoint: .bottom)
+            VStack(spacing: 0) {
+                Rectangle().fill(.white.opacity(0.55)).frame(width: 160, height: 3)
+                    .padding(.top, 220)
+                Text(book.title)
+                    .font(.system(size: 104, weight: .semibold, design: .serif))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(5)
+                    .minimumScaleFactor(0.45)
+                    .padding(.top, 70)
+                    .padding(.horizontal, 110)
+                if !book.seriesText.isEmpty {
+                    Text(book.seriesText)
+                        .font(.system(size: 46, weight: .regular, design: .serif))
+                        .italic()
+                        .opacity(0.8)
+                        .padding(.top, 36)
+                        .padding(.horizontal, 110)
+                }
+                Spacer(minLength: 40)
+                Text(book.authorText.uppercased())
+                    .font(.system(size: 50, weight: .medium))
+                    .tracking(6)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.5)
+                    .opacity(0.9)
+                    .padding(.horizontal, 110)
+                Rectangle().fill(.white.opacity(0.55)).frame(width: 160, height: 3)
+                    .padding(.top, 60)
+                    .padding(.bottom, 200)
+            }
+            .foregroundStyle(.white)
+        }
+        .frame(width: 1200, height: 1800)
+    }
+
+    /// The cover as JPEG data.
+    @MainActor
+    static func render(_ book: Book) -> Data? {
+        let renderer = ImageRenderer(content: GeneratedCover(book: book))
+        renderer.scale = 1
+        guard let image = renderer.nsImage, let tiff = image.tiffRepresentation else { return nil }
+        return ImageTools.encode(tiff, as: .jpeg, maxPixel: 1800)
+    }
+}

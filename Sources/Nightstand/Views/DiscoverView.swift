@@ -21,9 +21,6 @@ struct DiscoverView: View {
         let upNext = Insights.nextInSeries(books)
 
         Page(title: "Discover", subtitle: "What to read next, based on what you love.") {
-            OnlineSearchSection().staggered(0)
-
-            tasteSection(taste).staggered(0)
 
             VStack(alignment: .leading, spacing: 12) {
                 SectionHeading(title: "Suggested for You", symbol: "sparkles") {
@@ -65,7 +62,7 @@ struct DiscoverView: View {
                 }
                 if adding { addForm }
                 if saved.isEmpty, !adding {
-                    Text("Books you want but don't have yet. Search for one above, save a suggestion, or add one yourself. When you add the book's file to your library, it comes off this list.")
+                    Text("Books you want but don't have yet. Find them on the Browse page or add one yourself. They come off this list when you add the book's file.")
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .card()
@@ -76,6 +73,8 @@ struct DiscoverView: View {
             }
             .staggered(3)
             .animation(.snappy, value: recommendations)
+
+            tasteSection(taste).staggered(4)
         }
         .onAppear { tasteDraft = app.store.companion.taste }
         .onChange(of: app.store.companion.taste) { _, taste in
@@ -342,8 +341,17 @@ struct RecommendationCard: View {
                     Button("Save", systemImage: "bookmark") { set(.saved) }
                         .help("Add to your wishlist")
                 }
-                Button("Find", systemImage: "magnifyingglass") { find() }
-                    .help("Search for this book online")
+                if case .none = ownership {
+                    Button("Read", systemImage: "checkmark") { app.markRead(recommendation) }
+                        .labelStyle(.iconOnly)
+                        .help("You've read it: add it to your library as read, without a file")
+                } else if case .wishlisted = ownership {
+                    Button("Read", systemImage: "checkmark") { app.markRead(recommendation) }
+                        .labelStyle(.iconOnly)
+                        .help("You've read it: add it to your library as read, without a file")
+                }
+                Button("Goodreads", systemImage: "arrow.up.right.square") { find() }
+                    .help("Open this book on Goodreads in your browser")
                 Button(recommendation.state == .saved ? "Remove" : "Dismiss", systemImage: "xmark") { set(.dismissed) }
                     .labelStyle(.iconOnly)
                     .help(recommendation.state == .saved ? "Remove from your wishlist" : "Not for me")
@@ -367,8 +375,6 @@ struct RecommendationCard: View {
             NSWorkspace.shared.open(url)
             return
         }
-        var components = URLComponents(string: "https://openlibrary.org/search")!
-        components.queryItems = [URLQueryItem(name: "q", value: "\(recommendation.title) \(recommendation.authorText)")]
-        if let url = components.url { NSWorkspace.shared.open(url) }
+        NSWorkspace.shared.open(GoodreadsLookup.link(title: recommendation.title, authors: recommendation.authors))
     }
 }

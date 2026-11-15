@@ -248,10 +248,10 @@ final class ExtractedEPUB {
     let opfPath: String
     let opf: XMLDocument
 
-    private var opfURL: URL { root.appending(path: opfPath) }
-    private var opfDirectory: URL { opfURL.deletingLastPathComponent() }
-    private var package: XMLElement? { opf.rootElement() }
-    private var isEPUB3: Bool { package?.attr("version")?.hasPrefix("3") == true }
+    var opfURL: URL { root.appending(path: opfPath) }
+    var opfDirectory: URL { opfURL.deletingLastPathComponent() }
+    var package: XMLElement? { opf.rootElement() }
+    var isEPUB3: Bool { package?.attr("version")?.hasPrefix("3") == true }
 
     init(extracting archive: URL) throws {
         root = FileManager.default.temporaryDirectory.appending(path: "nightstand-\(UUID().uuidString)")
@@ -521,6 +521,8 @@ enum BookBuilder {
 
     private static func build(book: Book, source: URL, customCover: URL?, options: FormatOptions,
                               profile: OutputProfile, in folder: URL) throws -> URL {
+        // A book can have formatting of its own, used instead of the usual settings.
+        let options = book.formatOverride ?? options
         let name = outputName(for: book)
         let wantsKepub = profile.kepub && options.convertToKepub
         var current = source
@@ -532,6 +534,14 @@ enum BookBuilder {
             epub.applyMetadata(book)
             if let customCover, let data = try? Data(contentsOf: customCover) {
                 try epub.setCover(imageData: data)
+            }
+            if options.smartenPunctuation || options.removeBlankParagraphs {
+                epub.tidyText(smartPunctuation: options.smartenPunctuation, removeBlankParagraphs: options.removeBlankParagraphs)
+            }
+            if options.fixContents { epub.repairContents(title: book.title) }
+            if options.shrinkImages {
+                epub.shrinkImages()
+                if options.applyFormatting, options.useReaderFont { epub.removeFonts() }
             }
             if let css = options.css() { try epub.injectStylesheet(css) }
             if format == .epub, wantsKepub {

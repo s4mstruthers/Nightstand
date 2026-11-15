@@ -15,6 +15,7 @@ struct SidebarView: View {
             Section {
                 Label("Home", systemImage: "house").tag(SidebarItem.home)
                 Label("Discover", systemImage: "sparkles").badge(fresh).tag(SidebarItem.discover)
+                Label("Browse", systemImage: "globe").tag(SidebarItem.browse)
                 Label("Journal", systemImage: "text.book.closed").tag(SidebarItem.journal)
                 Label("Organise", systemImage: "wand.and.stars").tag(SidebarItem.organise)
                 Label("Fonts", systemImage: "textformat").tag(SidebarItem.fonts)
@@ -30,6 +31,30 @@ struct SidebarView: View {
                 if case .needs(let issue) = app.sidebar {
                     row(issue.title, symbol: issue.symbol, count: books.count(where: issue.matches), item: .needs(issue))
                 }
+            }
+
+            Section("Shelves") {
+                ForEach(app.store.companion.shelves) { shelf in
+                    row(shelf.name, symbol: "line.3.horizontal.decrease.circle", count: books.count(where: shelf.matches),
+                        item: .shelf(shelf.id))
+                        .contextMenu {
+                            Button("Edit Shelf…") { app.editingShelf = shelf }
+                            Button("Delete Shelf", role: .destructive) {
+                                withAnimation(.snappy) {
+                                    app.store.companion.shelves.removeAll { $0.id == shelf.id }
+                                    if app.sidebar == .shelf(shelf.id) { app.sidebar = .all }
+                                }
+                            }
+                        }
+                }
+                Button {
+                    app.editingShelf = Shelf(name: "")
+                } label: {
+                    Label("New Shelf…", systemImage: "plus")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Save a filter, such as unread sci-fi or five-star books, as a shelf in the sidebar")
             }
 
             if !app.devices.devices.isEmpty {

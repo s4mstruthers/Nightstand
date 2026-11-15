@@ -18,6 +18,16 @@ enum MetadataLookup {
         var tags: [String] = []
         /// Open Library work key, used to fetch the description on demand.
         var workKey: String?
+        var series: String?
+        var seriesIndex: Double?
+        /// The Goodreads readers' average, when the book came from Goodreads.
+        var rating: Double?
+        /// How many Goodreads readers rated it.
+        var ratings: Int?
+        /// Comics and graphic novels, which can crowd out the books they're adapted from.
+        var isComic = false
+        /// The book's page at its source, such as Apple Books.
+        var link: URL?
     }
 
     struct Results: Sendable {
@@ -41,25 +51,51 @@ enum MetadataLookup {
 
     // MARK: Browsing
 
-    /// Books matching words typed on the Discover page: a title, an author or both. Apple Books comes first
-    /// for its covers and descriptions; Open Library adds what Apple doesn't sell. One entry per book.
+    /// Books matching words typed on the Discover page: a title, an author, a series or a mix. Goodreads comes
+    /// first, as it finds the books people mean, with their series; Apple Books adds covers and descriptions;
+    /// Open Library adds what neither has. One entry per book, and comics after books unless asked for.
     static func browse(_ query: String) async -> Results {
+        async let goodreads = try? GoodreadsLookup.search(query)
         async let apple = searchAppleBooks(title: query, author: "", limit: 20)
         async let openLibrary = searchOpenLibrary(query: query)
-        let (first, second) = await (apple, openLibrary)
+        let (first, second, third) = await (goodreads, apple, openLibrary)
         var unavailable: [String] = []
-        if first == nil { unavailable.append("Apple Books") }
-        if second == nil { unavailable.append("Open Library") }
-        var seen: Set<String> = []
-        var unique: [Candidate] = []
-        for candidate in (first ?? []) + (second ?? []) {
-            // Translations and box sets crowd the results; one per title and first author.
+        if second == nil { unavailable.append("Apple Books") }
+        if third == nil { unavailable.append("Open Library") }
+        if first == nil, second == nil || third == nil { unavailable.append("Goodreads") }
+        // Goodreads' suggestions lead when enough people have read them; the rest (box-set listings, study
+        // guides, parodies) go after the other sources.
+        let found = (first ?? []).map(Candidate.init)
+        let read = found.filter { ($0.ratings ?? 0) >= 100 }.sorted { ($0.ratings ?? 0) > ($1.ratings ?? 0) }
+        let obscure = found.filter { ($0.ratings ?? 0) < 100 }
+        return Results(candidates: merge(read, second ?? [], third ?? [], obscure, query: query),
+                       unavailable: unavailable)
+    }
+
+    /// Joins results from several sources: one entry per title and first author, filling in a cover or
+    /// description the first source lacked, with comics last unless the search was for one.
+    static func merge(_ lists: [Candidate]..., query: String) -> [Candidate] {
+        func key(_ candidate: Candidate) -> String {
             let cut = candidate.title.firstIndex { $0 == ":" || $0 == "(" } ?? candidate.title.endIndex
-            let key = Insights.normalize(String(candidate.title[..<cut]))
+            return Insights.normalize(String(candidate.title[..<cut]))
                 + "|" + Insights.normalize(candidate.authors.first?.split(separator: " ").last.map(String.init) ?? "")
-            if seen.insert(key).inserted { unique.append(candidate) }
         }
-        return Results(candidates: unique, unavailable: unavailable)
+        var unique: [Candidate] = []
+        var index: [String: Int] = [:]
+        for candidate in lists.joined() {
+            let k = key(candidate)
+            if let at = index[k] {
+                unique[at].coverURL = unique[at].coverURL ?? candidate.coverURL
+                unique[at].summary = unique[at].summary ?? candidate.summary
+                unique[at].published = unique[at].published ?? candidate.published
+            } else {
+                index[k] = unique.count
+                unique.append(candidate)
+            }
+        }
+        let lower = query.lowercased()
+        guard !["comic", "graphic", "manga", "issue"].contains(where: lower.contains) else { return unique }
+        return unique.filter { !$0.isComic } + unique.filter(\.isComic)
     }
 
     // MARK: Filling in many books
@@ -155,8 +191,11 @@ enum MetadataLookup {
     static func parseOpenLibrary(_ data: Data) -> [Candidate]? {
         guard let search = try? JSONDecoder().decode(OpenLibrarySearch.self, from: data) else { return nil }
         return search.docs.map { doc in
-            Candidate(
-                id: "openlibrary\(doc.key)", source: "Open Library", title: doc.title, subtitle: doc.subtitle,
+            // Some records run the subtitle and series into the title: "Life in the North : A LitRPG Apocalypse".
+            let parts = doc.title.components(separatedBy: " : ")
+            return Candidate(
+                id: "openlibrary\(doc.key)", source: "Open Library", title: parts[0],
+                subtitle: doc.subtitle ?? (parts.count > 1 ? parts[1] : nil),
                 authors: doc.author_name ?? [], publisher: doc.publisher?.first,
                 published: doc.first_publish_year.map(String.init),
                 isbn: doc.isbn?.first { $0.count == 13 } ?? doc.isbn?.first,
@@ -214,6 +253,8 @@ enum MetadataLookup {
         var results: [Item]
     }
 
+    private static let comicGenres: Set<String> = ["Comics & Graphic Novels", "Manga", "Graphic Novels"]
+
     static func parseAppleBooks(_ data: Data) -> [Candidate]? {
         guard let search = try? JSONDecoder().decode(AppleSearch.self, from: data) else { return nil }
         return search.results.compactMap { item in
@@ -226,7 +267,8 @@ enum MetadataLookup {
                 publisher: nil, published: item.releaseDate.map { String($0.prefix(10)) },
                 summary: item.description.map(OPF.plainText), isbn: nil,
                 coverURL: cover.flatMap(URL.init(string:)),
-                tags: (item.genres ?? []).filter { $0 != "Books" })
+                tags: (item.genres ?? []).filter { $0 != "Books" },
+                isComic: !(item.genres ?? []).filter(comicGenres.contains).isEmpty)
         }
     }
 
@@ -298,5 +340,14 @@ enum MetadataLookup {
         ]
         guard let data = await fetch(components) else { return nil }
         return parseGoogleBooks(data)
+    }
+}
+
+extension MetadataLookup.Candidate {
+    init(_ match: GoodreadsLookup.Match) {
+        self.init(id: "goodreads/\(match.id)", source: "Goodreads", title: match.title, subtitle: nil,
+                  authors: match.author.isEmpty ? [] : [match.author], summary: match.summary,
+                  coverURL: match.coverURL, series: match.series, seriesIndex: match.seriesIndex,
+                  rating: match.rating > 0 ? match.rating : nil, ratings: match.ratings)
     }
 }

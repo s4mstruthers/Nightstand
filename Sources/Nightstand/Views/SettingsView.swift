@@ -18,34 +18,48 @@ struct SettingsView: View {
 
 struct FormattingSettings: View {
     @Environment(AppModel.self) private var app
+    /// The options being edited: the usual settings, or one book's own.
+    var options: Binding<FormatOptions>?
+    /// False for one book's formatting, where the KEPUB setting stays a library-wide choice.
+    var showsConversion = true
 
     var body: some View {
         @Bindable var settings = app.settings
-        let format = settings.format
+        let binding = options ?? $settings.format
+        FormattingForm(format: binding, showsConversion: showsConversion)
+    }
+}
 
+private struct FormattingForm: View {
+    @Binding var format: FormatOptions
+    var showsConversion: Bool
+
+    var body: some View {
         Form {
-            Section {
-                Toggle("Convert EPUB to KEPUB for Kobo", isOn: $settings.format.convertToKepub)
-            } footer: {
-                caption("KEPUB gives Kobo readers faster page turns, reading statistics and better typography controls. Other e-readers get standard EPUB.")
+            if showsConversion {
+                Section {
+                    Toggle("Convert EPUB to KEPUB for Kobo", isOn: $format.convertToKepub)
+                } footer: {
+                    caption("KEPUB gives Kobo readers faster page turns, reading statistics and better typography controls. Other e-readers get standard EPUB.")
+                }
             }
 
             Section {
-                Toggle("Restyle books when sending or exporting", isOn: $settings.format.applyFormatting)
+                Toggle("Restyle books when sending or exporting", isOn: $format.applyFormatting)
             } footer: {
                 caption("Applies to EPUB and KEPUB. Your library copy is never changed, so you can adjust these and send again.")
             }
 
             if format.applyFormatting {
                 Section("Text") {
-                    Picker("Base font size", selection: $settings.format.fontSizeMode) {
+                    Picker("Base font size", selection: $format.fontSizeMode) {
                         ForEach(FormatOptions.FontSizeMode.allCases) { Text($0.label).tag($0) }
                     }
                     .pickerStyle(.segmented)
                     if format.fontSizeMode == .relative {
                         LabeledContent {
                             HStack {
-                                Slider(value: $settings.format.fontScale, in: 70...160, step: 5)
+                                Slider(value: $format.fontScale, in: 70...160, step: 5)
                                 Text("\(Int(format.fontScale))%").monospacedDigit().frame(width: 52, alignment: .trailing)
                             }
                         } label: {
@@ -55,8 +69,8 @@ struct FormattingSettings: View {
                     } else {
                         LabeledContent {
                             HStack {
-                                Slider(value: $settings.format.fontSizePoints, in: 8...24, step: 0.5)
-                                Stepper("", value: $settings.format.fontSizePoints, in: 8...24, step: 0.5)
+                                Slider(value: $format.fontSizePoints, in: 8...24, step: 0.5)
+                                Stepper("", value: $format.fontSizePoints, in: 8...24, step: 0.5)
                                     .labelsHidden()
                                 Text("\(FormatOptions.points(format.fontSizePoints)) pt").monospacedDigit()
                                     .frame(width: 52, alignment: .trailing)
@@ -66,16 +80,16 @@ struct FormattingSettings: View {
                             Text("The same size in every book, like Calibre's base font size. Some e-readers then limit what their own font size setting can do.")
                         }
                     }
-                    Toggle("Ignore fixed font sizes set by the publisher", isOn: $settings.format.normalizeFontSizes)
-                    Toggle(isOn: $settings.format.useReaderFont) {
+                    Toggle("Ignore fixed font sizes set by the publisher", isOn: $format.normalizeFontSizes)
+                    Toggle(isOn: $format.useReaderFont) {
                         Text("Use the e-reader's font")
                         Text("Drops fonts chosen by the publisher, so the font you pick on the device applies everywhere.")
                     }
-                    Toggle("Set line spacing", isOn: $settings.format.overrideLineHeight)
+                    Toggle("Set line spacing", isOn: $format.overrideLineHeight)
                     if format.overrideLineHeight {
                         LabeledContent("Line spacing") {
                             HStack {
-                                Slider(value: $settings.format.lineHeight, in: 1...2, step: 0.05)
+                                Slider(value: $format.lineHeight, in: 1...2, step: 0.05)
                                 Text(String(format: "%.2f", format.lineHeight)).monospacedDigit()
                                     .frame(width: 44, alignment: .trailing)
                             }
@@ -83,20 +97,34 @@ struct FormattingSettings: View {
                     }
                 }
                 Section("Layout") {
-                    Picker("Alignment", selection: $settings.format.alignment) {
+                    Picker("Alignment", selection: $format.alignment) {
                         ForEach(FormatOptions.Alignment.allCases) { Text($0.label).tag($0) }
                     }
-                    Picker("Paragraphs", selection: $settings.format.paragraphStyle) {
+                    Picker("Paragraphs", selection: $format.paragraphStyle) {
                         ForEach(FormatOptions.ParagraphStyle.allCases) { Text($0.label).tag($0) }
                     }
-                    Toggle("Remove page margins", isOn: $settings.format.removeMargins)
-                    Toggle("Hyphenate", isOn: $settings.format.hyphenate)
+                    Picker("Page margins", selection: $format.margins) {
+                        ForEach(FormatOptions.Margins.allCases) { Text($0.label).tag($0) }
+                    }
+                    if format.margins == .custom {
+                        LabeledContent {
+                            HStack {
+                                Slider(value: $format.marginSize, in: 0...5, step: 0.25)
+                                Text(String(format: "%.2g em", format.marginSize)).monospacedDigit()
+                                    .frame(width: 52, alignment: .trailing)
+                            }
+                        } label: {
+                            Text("Margin")
+                            Text("At each side of the text. 1 em is about the width of a letter M.")
+                        }
+                    }
+                    Toggle("Hyphenate", isOn: $format.hyphenate)
                 }
                 Section("Preview") {
                     FormatPreview(format: format)
                 }
                 Section {
-                    TextEditor(text: $settings.format.extraCSS)
+                    TextEditor(text: $format.extraCSS)
                         .font(.system(.callout, design: .monospaced))
                         .frame(height: 70)
                         .scrollContentBackground(.hidden)
@@ -106,11 +134,35 @@ struct FormattingSettings: View {
                     caption("For anything the options above don't cover. Added to every chapter after the rules above, for example: h2 { text-align: center; }")
                 }
             }
+
+            Section {
+                Toggle(isOn: $format.smartenPunctuation) {
+                    Text("Tidy punctuation")
+                    Text("Curly quotes, proper dashes and ellipses instead of typewriter ones (\"…\" -- ...).")
+                }
+                Toggle(isOn: $format.removeBlankParagraphs) {
+                    Text("Remove empty paragraphs")
+                    Text("Takes out blank lines some books use for spacing, which leave big gaps on an e-reader.")
+                }
+                Toggle(isOn: $format.fixContents) {
+                    Text("Fix a missing table of contents")
+                    Text("When a book has no contents, or only one entry, builds one from its chapter headings.")
+                }
+                Toggle(isOn: $format.shrinkImages) {
+                    Text("Shrink books")
+                    Text("Scales big pictures down to e-reader size, and drops the publisher's fonts when the e-reader's font is used. Books take less space and open faster.")
+                }
+            } header: {
+                Text("Tidy and Shrink")
+            } footer: {
+                caption("Like Calibre's Polish Books. Applied to the copy that's sent or exported, so your library copy stays as it is.")
+            }
         }
         .formStyle(.grouped)
         .animation(.snappy, value: format.applyFormatting)
         .animation(.snappy, value: format.overrideLineHeight)
         .animation(.snappy, value: format.fontSizeMode)
+        .animation(.snappy, value: format.margins)
     }
 }
 
@@ -143,7 +195,7 @@ private struct FormatPreview: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(format.removeMargins ? 4 : 14)
+        .padding(format.margins == .none ? 4 : format.margins == .custom ? 4 + format.marginSize * 6 : 14)
         .frame(maxWidth: .infinity)
         .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
         .animation(.snappy, value: format)

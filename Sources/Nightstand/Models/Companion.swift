@@ -38,6 +38,10 @@ struct Recommendation: Identifiable, Codable, Hashable, Sendable {
         coverURL = candidate.coverURL
         summary = candidate.summary
         published = candidate.published.map { String($0.prefix(4)) }
+        series = candidate.series
+        seriesIndex = candidate.seriesIndex
+        goodreadsRating = candidate.rating
+        if candidate.source == "Goodreads" { goodreadsID = candidate.id.components(separatedBy: "/").last }
     }
 
     init(title: String, authors: [String] = [], reason: String = "", source: String = "assistant",
@@ -50,6 +54,28 @@ struct Recommendation: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
+/// A saved filter shown in the sidebar, like Calibre's virtual libraries: every book matching all its rules.
+struct Shelf: Identifiable, Codable, Hashable, Sendable {
+    var id = UUID()
+    var name: String
+    /// Words to find in the title, author, series, tags or notes.
+    var search = ""
+    var status: ReadingStatus?
+    /// At least this many stars; 0 for any.
+    var minimumRating = 0
+    var tag: String?
+    var favouritesOnly = false
+
+    func matches(_ book: Book) -> Bool {
+        if let status, book.status != status { return false }
+        if book.rating < minimumRating { return false }
+        if let tag, !book.tags.contains(tag) { return false }
+        if favouritesOnly, !book.isFavourite { return false }
+        let words = search.lowercased().split(separator: " ").map(String.init)
+        return words.allSatisfy { book.searchText.contains($0) }
+    }
+}
+
 /// What sits beside the books: the reader's taste in their own words, and books they might want.
 /// Kept in its own file so the book index stays exactly as older versions expect it.
 struct Companion: Codable, Equatable, Sendable {
@@ -58,6 +84,7 @@ struct Companion: Codable, Equatable, Sendable {
     var recommendations: [Recommendation] = []
     /// Books to finish this year; nil when no goal is set.
     var yearlyGoal: Int?
+    var shelves: [Shelf] = []
 
     init() {}
 
@@ -66,6 +93,7 @@ struct Companion: Codable, Equatable, Sendable {
         taste = try container.decodeIfPresent(String.self, forKey: .taste) ?? ""
         recommendations = try container.decodeIfPresent([Recommendation].self, forKey: .recommendations) ?? []
         yearlyGoal = try container.decodeIfPresent(Int.self, forKey: .yearlyGoal)
+        shelves = (try? container.decodeIfPresent([Shelf].self, forKey: .shelves)) ?? []
     }
 
     /// Adds suggestions, skipping ones already listed or already in the library. Returns those added.
@@ -212,6 +240,47 @@ enum Insights {
             let ours = surnames(book.authors)
             return theirs.isEmpty || ours.isEmpty || !theirs.isDisjoint(with: ours)
         }
+    }
+
+    // MARK: Duplicates
+
+    /// Books that look like the same book added more than once: the same title (ignoring subtitles and
+    /// series in brackets) and a shared author surname. Each group lists the best one to keep first: the one
+    /// with a file, then an EPUB, then the most read, then the one with the most recorded about it.
+    static func duplicates(_ books: [Book]) -> [[Book]] {
+        func key(_ book: Book) -> String {
+            let title = MetadataCleaner.seriesInParentheses(book.title)?.title ?? book.title
+            let cut = title.firstIndex { $0 == ":" || $0 == "(" || $0 == "[" } ?? title.endIndex
+            return normalize(String(title[..<cut]))
+        }
+        func surnames(_ book: Book) -> Set<String> {
+            Set(MetadataCleaner.cleanAuthors(book.authors).compactMap {
+                $0.split(separator: " ").last.map { normalize(String($0)) }
+            })
+        }
+        var groups: [[Book]] = []
+        for (title, same) in Dictionary(grouping: books, by: key) where !title.isEmpty && same.count > 1 {
+            // Split by author, so two different books with the same title stay apart.
+            var remaining = same
+            while let first = remaining.first {
+                let names = surnames(first)
+                let group = remaining.filter {
+                    $0.id == first.id || names.isEmpty || surnames($0).isEmpty || !names.isDisjoint(with: surnames($0))
+                }
+                remaining.removeAll { book in group.contains { $0.id == book.id } }
+                if group.count > 1 { groups.append(group.sorted(by: betterToKeep)) }
+            }
+        }
+        return groups.sorted { $0[0].title.localizedStandardCompare($1[0].title) == .orderedAscending }
+    }
+
+    static func betterToKeep(_ a: Book, _ b: Book) -> Bool {
+        func score(_ book: Book) -> (Int, Int, Double, Int) {
+            let recorded = [book.rating > 0, !book.notes.isEmpty, book.hasThoughts, book.isFavourite,
+                            !(book.highlights ?? []).isEmpty, book.hasCover, !(book.summary ?? "").isEmpty]
+            return (book.hasFile ? 1 : 0, book.format.isEPUBBased ? 1 : 0, book.progress ?? 0, recorded.count { $0 })
+        }
+        return score(a) > score(b)
     }
 
     // MARK: Missing from a series

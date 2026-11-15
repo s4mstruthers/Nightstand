@@ -31,6 +31,26 @@ extension AppModel {
         }
     }
 
+    /// Adds a book you've already read, without a file, to the library as finished. Its wishlist entry goes.
+    func markRead(_ entry: Recommendation) {
+        var book = Book(title: entry.title, format: .epub)
+        book.authors = entry.authors
+        book.series = entry.series
+        book.seriesIndex = entry.seriesIndex
+        book.summary = entry.summary
+        book.published = entry.published
+        book.status = .finished
+        book.goodreadsID = entry.goodreadsID
+        book.goodreadsRating = entry.goodreadsRating
+        book.goodreadsRatings = entry.goodreadsRatings
+        let cover = entry.coverURL
+        Task {
+            let added = await store.addWithoutFile(book, cover: cover)
+            activity.flash("Added “\(added.title)” as read",
+                           detail: "Rate it from its details. If you add its file later, it joins this book.")
+        }
+    }
+
     func removeFromWishlist(_ id: UUID) {
         withAnimation(.snappy) { store.companion.recommendations.removeAll { $0.id == id } }
     }
@@ -77,7 +97,7 @@ struct OnlineSearchSection: View {
 
             if !searched.isEmpty, !searching {
                 if results.isEmpty {
-                    Text(unavailable.count == 2 ? "Apple Books and Open Library couldn't be reached. Check your internet connection."
+                    Text(unavailable.count >= 3 ? "Goodreads, Apple Books and Open Library couldn't be reached. Check your internet connection."
                          : "Nothing found for “\(searched)”. Try fewer words, or just the author.")
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -94,7 +114,7 @@ struct OnlineSearchSection: View {
                         .buttonStyle(.plain)
                         .foregroundStyle(.tint)
                     }
-                    Text("From Apple Books and Open Library. Only the words you typed are sent.")
+                    Text("From Goodreads, Apple Books and Open Library. Only the words you typed are sent.")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
@@ -131,7 +151,13 @@ private struct OnlineBookCard: View {
                 .frame(width: 54)
             VStack(alignment: .leading, spacing: 4) {
                 Text(candidate.title).font(.system(.headline, design: .serif)).lineLimit(2)
-                Text([candidate.authors.joined(separator: ", "), candidate.published.map { String($0.prefix(4)) }]
+                Text([candidate.authors.joined(separator: ", "),
+                      candidate.series.map { name in
+                          candidate.seriesIndex.map { "\(name) #\(FormatOptions.points($0))" } ?? name
+                      },
+                      candidate.published.map { String($0.prefix(4)) },
+                      candidate.rating.map { String(format: "Goodreads %.2f", $0) },
+                      candidate.isComic ? "Comic" : nil]
                     .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -146,8 +172,19 @@ private struct OnlineBookCard: View {
                 }
             }
             Spacer(minLength: 8)
-            OwnershipControl(ownership: ownership) {
-                app.addToWishlist(Recommendation(candidate))
+            VStack(alignment: .trailing, spacing: 6) {
+                OwnershipControl(ownership: ownership) {
+                    app.addToWishlist(Recommendation(candidate))
+                } read: {
+                    if case .wishlisted(let entry) = ownership { app.markRead(entry) } else { app.markRead(Recommendation(candidate)) }
+                }
+                Link(destination: GoodreadsLookup.link(
+                    id: candidate.source == "Goodreads" ? candidate.id.components(separatedBy: "/").last : nil,
+                    title: candidate.title, authors: candidate.authors)) {
+                    Label("Goodreads", systemImage: "arrow.up.right.square")
+                }
+                .font(.caption)
+                .help("Open this book on Goodreads in your browser")
             }
         }
         .card(padding: 14)
@@ -160,6 +197,8 @@ struct OwnershipControl: View {
     @Environment(AppModel.self) private var app
     let ownership: Ownership
     var add: () -> Void
+    /// Adds the book to the library as read, without a file.
+    var read: (() -> Void)?
 
     var body: some View {
         Group {
@@ -177,12 +216,24 @@ struct OwnershipControl: View {
                     Label("On Your Wishlist", systemImage: "bookmark.fill")
                         .font(.callout.weight(.medium))
                         .foregroundStyle(.tint)
-                    Button("Remove") { app.removeFromWishlist(entry.id) }
-                        .controlSize(.small)
+                    HStack(spacing: 6) {
+                        if let read {
+                            Button("I've Read It", systemImage: "checkmark", action: read)
+                                .help("Add it to your library as read. You don't need the file.")
+                        }
+                        Button("Remove") { app.removeFromWishlist(entry.id) }
+                    }
+                    .controlSize(.small)
                 }
             case .none:
-                Button("Add to Wishlist", systemImage: "bookmark", action: add)
-                    .controlSize(.small)
+                VStack(alignment: .trailing, spacing: 4) {
+                    Button("Add to Wishlist", systemImage: "bookmark", action: add)
+                    if let read {
+                        Button("I've Read It", systemImage: "checkmark", action: read)
+                            .help("Add it to your library as read. You don't need the file.")
+                    }
+                }
+                .controlSize(.small)
             }
         }
         .fixedSize()
@@ -267,20 +318,26 @@ private struct GapCard: View {
         gap.index.rounded() == gap.index ? String(Int(gap.index)) : String(gap.index)
     }
 
+    private func entry(_ title: String) -> Recommendation {
+        var entry = Recommendation(title: title, authors: gap.authors, source: "you", state: .saved)
+        entry.series = gap.series
+        entry.seriesIndex = gap.index
+        entry.coverURL = match?.coverURL
+        entry.summary = match?.summary
+        entry.goodreadsID = match?.id
+        if let match, match.rating > 0 {
+            entry.goodreadsRating = match.rating
+            entry.goodreadsRatings = match.ratings
+        }
+        return entry
+    }
+
     var body: some View {
         let title = match?.title ?? "\(gap.series) \(number)"
         let ownership = app.ownership(title: title, authors: gap.authors)
         VStack(alignment: .leading, spacing: 6) {
             WebCover(url: match?.coverURL, title: title, authors: gap.authors)
                 .frame(width: 92)
-                .overlay(alignment: .topLeading) {
-                    Text("#\(number)")
-                        .font(.caption.weight(.bold).monospacedDigit())
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(.regularMaterial, in: Capsule())
-                        .padding(5)
-                }
             Text(match?.title ?? "Book \(number)")
                 .font(.caption.weight(.medium))
                 .lineLimit(2)
@@ -290,27 +347,25 @@ private struct GapCard: View {
             }
             switch ownership {
             case .wishlisted(let entry):
-                Button("On Wishlist", systemImage: "bookmark.fill") { app.removeFromWishlist(entry.id) }
-                    .help("Remove from your wishlist")
-                    .controlSize(.mini)
+                HStack(spacing: 4) {
+                    Button("On Wishlist", systemImage: "bookmark.fill") { app.removeFromWishlist(entry.id) }
+                        .help("On your wishlist. Click to remove it.")
+                    Button("Read", systemImage: "checkmark") { app.markRead(entry) }
+                        .help("You've read it: add it to your library as read, without a file")
+                }
+                .labelStyle(.iconOnly)
+                .controlSize(.small)
             case .owned:
                 Label("Owned", systemImage: "checkmark.circle.fill").font(.caption2).foregroundStyle(.green)
             case .none:
-                Button("Wishlist", systemImage: "bookmark") {
-                    var entry = Recommendation(title: title, authors: gap.authors, source: "you", state: .saved)
-                    entry.series = gap.series
-                    entry.seriesIndex = gap.index
-                    entry.coverURL = match?.coverURL
-                    entry.summary = match?.summary
-                    entry.goodreadsID = match?.id
-                    if let match, match.rating > 0 {
-                        entry.goodreadsRating = match.rating
-                        entry.goodreadsRatings = match.ratings
-                    }
-                    app.addToWishlist(entry)
+                HStack(spacing: 4) {
+                    Button("Wishlist", systemImage: "bookmark") { app.addToWishlist(entry(title)) }
+                        .help("Add to your wishlist")
+                    Button("Read", systemImage: "checkmark") { app.markRead(entry(title)) }
+                        .help("You've read it: add it to your library as read, without a file")
                 }
-                .help("Add to your wishlist")
-                .controlSize(.mini)
+                .labelStyle(.iconOnly)
+                .controlSize(.small)
             }
         }
         .frame(width: 92, alignment: .leading)
