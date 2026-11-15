@@ -94,27 +94,47 @@ struct DiscoverView: View {
         .task(id: app.store.companion.recommendations.map(\.id)) { await rateSuggestions() }
     }
 
-    /// Fills in the Goodreads rating for suggestions and wishlist books that don't have one, gently.
+    /// Fills in the cover and Goodreads rating for suggestions and wishlist books that lack either, gently.
+    /// An assistant only gives a title, authors and a reason, so the cover has to be found here.
     private func rateSuggestions() async {
         let waiting = app.store.companion.recommendations.filter {
-            $0.state != .dismissed && $0.goodreadsRating == nil && !lookedUp.contains($0.id)
+            $0.state != .dismissed && ($0.goodreadsRating == nil || $0.coverURL == nil) && !lookedUp.contains($0.id)
         }
         for suggestion in waiting.prefix(12) {
             if Task.isCancelled { return }
             lookedUp.insert(suggestion.id)
-            guard let match = try? await GoodreadsLookup.find(title: suggestion.title, authors: suggestion.authors) else {
-                // Refused, offline or not found: leave the rest for another time.
-                continue
+            // Refused, offline or not found on Goodreads: the cover can still come from the book catalogues.
+            let match = try? await GoodreadsLookup.find(title: suggestion.title, authors: suggestion.authors)
+            var cover = suggestion.coverURL ?? match?.coverURL
+            if cover == nil {
+                cover = await Self.catalogueCover(title: suggestion.title, authors: suggestion.authors)
             }
             if let index = app.store.companion.recommendations.firstIndex(where: { $0.id == suggestion.id }) {
                 withAnimation(.snappy) {
-                    app.store.companion.recommendations[index].goodreadsRating = match.rating
-                    app.store.companion.recommendations[index].goodreadsRatings = match.ratings
-                    app.store.companion.recommendations[index].goodreadsID = match.id
+                    var entry = app.store.companion.recommendations[index]
+                    if let match {
+                        entry.goodreadsRating = match.rating
+                        entry.goodreadsRatings = match.ratings
+                        entry.goodreadsID = match.id
+                        entry.series = entry.series ?? match.series
+                        entry.seriesIndex = entry.seriesIndex ?? match.seriesIndex
+                        entry.summary = entry.summary ?? match.summary
+                    }
+                    entry.coverURL = entry.coverURL ?? cover
+                    app.store.companion.recommendations[index] = entry
                 }
             }
             try? await Task.sleep(for: .seconds(GoodreadsLookup.pause))
         }
+    }
+
+    /// A cover from Apple Books, Open Library or Google Books, for a result whose title is the same book.
+    static func catalogueCover(title: String, authors: [String]) async -> URL? {
+        let found = await MetadataLookup.search(title: title, author: authors.first ?? "")
+        let wanted = Insights.normalize(title)
+        let withCover = found.candidates.filter { $0.coverURL != nil }
+        return (withCover.first { Insights.normalize($0.title) == wanted }
+                ?? withCover.first { Insights.normalize($0.title).hasPrefix(wanted) })?.coverURL
     }
 
     // MARK: Taste
