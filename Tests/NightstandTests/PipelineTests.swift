@@ -1314,6 +1314,28 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(try LibraryIndex.load(from: work), [])
     }
 
+    func testSeriesListMergesSpellingsAndSorts() {
+        func book(_ series: String?, tags: [String] = [], read: TimeInterval? = nil) -> Book {
+            var book = Book(title: "T", format: .epub)
+            book.series = series
+            book.tags = tags
+            book.lastRead = read.map(Date.init(timeIntervalSince1970:))
+            return book
+        }
+        let books = [book("King\u{2019}s Dark Tidings", tags: ["Fantasy"]), book("King's Dark Tidings", tags: ["Fantasy", "Epic"]),
+                     book("King's Dark Tidings"), book("Arc", tags: ["Sci-Fi"], read: 50), book("Zed", read: 100),
+                     book(nil), book("")]
+        let byName = SeriesList.entries(in: books, order: .name)
+        XCTAssertEqual(byName.map(\.name), ["Arc", "King's Dark Tidings", "Zed"])
+        XCTAssertEqual(byName[1].count, 3)
+        XCTAssertEqual(byName[1].genre, "Fantasy")
+        XCTAssertEqual(SeriesList.entries(in: books, order: .size).first?.name, "King's Dark Tidings")
+        XCTAssertEqual(SeriesList.entries(in: books, order: .recent).map(\.name), ["Zed", "Arc", "King's Dark Tidings"])
+        let genres = SeriesList.byGenre(byName)
+        XCTAssertEqual(genres.map(\.genre), ["Fantasy", "Sci-Fi", "No Genre"])
+        XCTAssertEqual(genres.last?.series.map(\.name), ["Zed"])
+    }
+
     func testUnreadableCompanionIsKept() throws {
         let damaged = Data("nonsense".utf8)
         try damaged.write(to: CompanionIndex.url(in: work))

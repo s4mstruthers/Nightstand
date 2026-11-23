@@ -457,3 +457,73 @@ enum KeptCopy {
         if !fm.fileExists(atPath: copy.path) { try? fm.copyItem(at: file, to: copy) }
     }
 }
+
+/// How the sidebar orders its list of series.
+enum SeriesOrder: String, CaseIterable, Identifiable {
+    case name, size, recent, genre
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .name: "Name"
+        case .size: "Most Books"
+        case .recent: "Recently Read"
+        case .genre: "Genre"
+        }
+    }
+}
+
+/// The series in a library, as the sidebar lists them.
+enum SeriesList {
+    struct Entry: Equatable, Identifiable {
+        /// The spelling most of its books use.
+        var name: String
+        var count: Int
+        var lastRead: Date?
+        /// The tag most of its books carry, if any.
+        var genre: String?
+        var id: String { name }
+    }
+
+    /// What makes two spellings the same series: case, surrounding spaces and the style of apostrophes and
+    /// quotation marks don't count, so “King’s Dark Tidings” and "King's Dark Tidings" are one.
+    static func key(_ name: String?) -> String {
+        (name ?? "").trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "[\u{2018}\u{2019}\u{02BC}`]", with: "'", options: .regularExpression)
+            .replacingOccurrences(of: "[\u{201C}\u{201D}]", with: "\"", options: .regularExpression)
+            .folding(options: [.caseInsensitive], locale: nil)
+    }
+
+    static func entries(in books: [Book], order: SeriesOrder) -> [Entry] {
+        let entries = Dictionary(grouping: books.filter { !key($0.series).isEmpty }) { key($0.series) }.values.map { books in
+            Entry(name: mostCommon(books.compactMap(\.series)) ?? "", count: books.count,
+                  lastRead: books.compactMap(\.lastRead).max(), genre: mostCommon(books.flatMap(\.tags)))
+        }
+        func byName(_ a: Entry, _ b: Entry) -> Bool { a.name.localizedStandardCompare(b.name) == .orderedAscending }
+        switch order {
+        case .name, .genre:
+            return entries.sorted(by: byName)
+        case .size:
+            return entries.sorted { $0.count != $1.count ? $0.count > $1.count : byName($0, $1) }
+        case .recent:
+            return entries.sorted {
+                let a = $0.lastRead ?? .distantPast, b = $1.lastRead ?? .distantPast
+                return a != b ? a > b : byName($0, $1)
+            }
+        }
+    }
+
+    /// The series under the genre each belongs to, genres in alphabetical order and those without one last.
+    static func byGenre(_ entries: [Entry]) -> [(genre: String, series: [Entry])] {
+        let groups = Dictionary(grouping: entries) { $0.genre ?? "" }
+        return groups.keys.sorted {
+            $0.isEmpty != $1.isEmpty ? !$0.isEmpty : $0.localizedStandardCompare($1) == .orderedAscending
+        }.map { (genre: $0.isEmpty ? "No Genre" : $0, series: groups[$0] ?? []) }
+    }
+
+    /// The most frequent value; of equally frequent ones, the first alphabetically, so it never flips.
+    private static func mostCommon(_ values: [String]) -> String? {
+        Dictionary(values.map { ($0, 1) }, uniquingKeysWith: +)
+            .max { $0.value != $1.value ? $0.value < $1.value : $0.key > $1.key }?.key
+    }
+}

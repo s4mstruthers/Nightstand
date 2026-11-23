@@ -116,7 +116,9 @@ final class AppModel {
         var books = store.books
         switch sidebar {
         case .status(let status): books = books.filter { $0.status == status }
-        case .series(let name): books = books.filter { $0.series == name }
+        case .series(let name):
+            let key = SeriesList.key(name)
+            books = books.filter { SeriesList.key($0.series) == key }
         case .author(let name): books = books.filter { $0.authors.contains(name) }
         case .tag(let name): books = books.filter { $0.tags.contains(name) }
         case .favourites: books = books.filter(\.isFavourite)

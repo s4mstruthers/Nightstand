@@ -3,6 +3,7 @@ import SwiftUI
 struct SidebarView: View {
     @Environment(AppModel.self) private var app
     @AppStorage("sidebar.series") private var seriesExpanded = true
+    @AppStorage("sidebar.seriesOrder") private var seriesOrder = SeriesOrder.name
     @AppStorage("sidebar.authors") private var authorsExpanded = false
     @AppStorage("sidebar.tags") private var tagsExpanded = false
 
@@ -82,8 +83,7 @@ struct SidebarView: View {
                 }
             }
 
-            group("Series", expanded: $seriesExpanded, symbol: "square.stack",
-                  values: books.compactMap { $0.series?.isEmpty == false ? $0.series : nil }) { .series($0) }
+            series(in: books)
             group("Authors", expanded: $authorsExpanded, symbol: "person",
                   values: books.flatMap(\.authors)) { .author($0) }
             group("Tags", expanded: $tagsExpanded, symbol: "tag",
@@ -141,6 +141,54 @@ struct SidebarView: View {
         Label(title, systemImage: symbol)
             .badge(count)
             .tag(item)
+    }
+
+    /// The series, in the order chosen from the menu beside the heading; by genre, each genre folds away.
+    @ViewBuilder
+    private func series(in books: [Book]) -> some View {
+        let entries = SeriesList.entries(in: books, order: seriesOrder)
+        if !entries.isEmpty {
+            Section(isExpanded: $seriesExpanded) {
+                if seriesOrder == .genre {
+                    ForEach(SeriesList.byGenre(entries), id: \.genre) { group in
+                        DisclosureGroup {
+                            ForEach(group.series) { seriesRow($0) }
+                        } label: {
+                            Label(group.genre, systemImage: "tag").badge(group.series.count)
+                        }
+                    }
+                } else {
+                    ForEach(entries) { seriesRow($0) }
+                }
+            } header: {
+                HStack {
+                    Text("Series")
+                    Spacer()
+                    Menu {
+                        Picker("Sort Series By", selection: $seriesOrder) {
+                            ForEach(SeriesOrder.allCases) { Text($0.label).tag($0) }
+                        }
+                        .pickerStyle(.inline)
+                    } label: {
+                        Label("Sort Series", systemImage: "arrow.up.arrow.down")
+                            .labelStyle(.iconOnly)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .foregroundStyle(.secondary)
+                    .help("Sort series by name, size, when you last read them, or genre")
+                    // Clear of the arrow that folds the section away, which appears at the edge on hover.
+                    .padding(.trailing, 18)
+                }
+            }
+        }
+    }
+
+    private func seriesRow(_ entry: SeriesList.Entry) -> some View {
+        row(entry.name, symbol: "square.stack", count: entry.count, item: .series(entry.name))
+            // The sidebar is narrow; the full name is a hover away.
+            .help(entry.name)
     }
 
     @ViewBuilder
