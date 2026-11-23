@@ -297,6 +297,24 @@ enum KoboTidy {
         }
     }
 
+    /// Copies files that looked damaged into `folder` and returns the ones that can now be removed from the
+    /// device. A file is left where it is if it opens on this second look (the first failure may have been a
+    /// passing read error) or if it couldn't be copied.
+    static func setAside(_ paths: [String], on root: URL, to folder: URL) -> [String] {
+        let fm = FileManager.default
+        return paths.filter { path in
+            let file = root.appending(path: path)
+            guard fm.fileExists(atPath: file.path), (try? EPUBReader.opfPath(in: file)) == nil,
+                  (try? fm.createDirectory(at: folder, withIntermediateDirectories: true)) != nil else { return false }
+            var copy = folder.appending(path: file.lastPathComponent)
+            if fm.fileExists(atPath: copy.path) {
+                let name = file.deletingPathExtension().lastPathComponent
+                copy = folder.appending(path: "\(name) \(UUID().uuidString.prefix(8)).\(file.pathExtension)")
+            }
+            return (try? fm.copyItem(at: file, to: copy)) != nil
+        }
+    }
+
     /// Copies the Kobo's database (and its write-ahead log) to `folder`, named with the date.
     @discardableResult
     static func backUpDatabase(on root: URL, to folder: URL) throws -> URL {

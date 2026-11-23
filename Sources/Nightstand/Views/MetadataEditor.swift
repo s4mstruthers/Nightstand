@@ -4,12 +4,15 @@ struct MetadataEditor: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
 
+    /// The book as it was when the sheet opened.
+    private let original: Book
     @State private var draft: Book
     @State private var authors: String
     @State private var tags: String
     @State private var seriesIndex: String
 
     init(book: Book) {
+        original = book
         _draft = State(initialValue: book)
         _authors = State(initialValue: book.authors.joined(separator: ", "))
         _tags = State(initialValue: book.tags.joined(separator: ", "))
@@ -87,18 +90,28 @@ struct MetadataEditor: View {
         func list(_ text: String) -> [String] {
             text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         }
-        // Cover changes made while the sheet was open went straight to the store; keep them.
-        var book = draft
-        if let live = app.store.book(draft.id) {
-            book.hasCover = live.hasCover
-            book.customCover = live.customCover
-            book.coverVersion = live.coverVersion
+        var edited = draft
+        edited.title = edited.title.trimmingCharacters(in: .whitespaces)
+        edited.authors = list(authors)
+        edited.tags = list(tags)
+        edited.series = edited.series?.trimmingCharacters(in: .whitespaces)
+        edited.seriesIndex = Double(seriesIndex.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: "."))
+        // Only what was changed here goes onto the book as it is now, so a rating, reading progress, cover or
+        // an assistant's edit made while the sheet was open is kept.
+        guard var book = app.store.book(draft.id) else { return dismiss() }
+        func apply<Value: Equatable>(_ field: WritableKeyPath<Book, Value>) {
+            if edited[keyPath: field] != original[keyPath: field] { book[keyPath: field] = edited[keyPath: field] }
         }
-        book.title = book.title.trimmingCharacters(in: .whitespaces)
-        book.authors = list(authors)
-        book.tags = list(tags)
-        book.series = book.series?.trimmingCharacters(in: .whitespaces)
-        book.seriesIndex = Double(seriesIndex.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: "."))
+        apply(\.title)
+        apply(\.authors)
+        apply(\.tags)
+        apply(\.series)
+        apply(\.seriesIndex)
+        apply(\.publisher)
+        apply(\.published)
+        apply(\.language)
+        apply(\.isbn)
+        apply(\.summary)
         app.store.update(book)
         dismiss()
     }

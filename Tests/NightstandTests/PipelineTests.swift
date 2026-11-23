@@ -1263,6 +1263,108 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(saved.notes, "Mine")
     }
 
+    @MainActor
+    func testSavingMergesEditsMadeByAnotherProcess() throws {
+        let mine = Book(title: "Mine", format: .epub), theirs = Book(title: "Theirs", format: .epub)
+        let gone = Book(title: "Gone", format: .epub)
+        try LibraryIndex.save([mine, theirs, gone], to: work)
+        let store = LibraryStore(root: work, activity: ActivityCenter())
+
+        // The app edits one book and has not saved yet...
+        store.modify([mine.id]) { $0.rating = 5 }
+        // ...when an assistant edits another, adds a third and removes a fourth.
+        var edited = theirs
+        edited.tags = ["fantasy"]
+        let added = Book(title: "Added", format: .epub)
+        Thread.sleep(forTimeInterval: 0.05)
+        try LibraryIndex.save([mine, edited, added], to: work)
+
+        store.reloadIfChanged()
+        XCTAssertEqual(store.book(mine.id)?.rating, 5, "an unsaved edit is not replaced by a reload")
+        store.saveNow()
+        let saved = try LibraryIndex.load(from: work)
+        XCTAssertEqual(Set(saved.map(\.title)), ["Mine", "Theirs", "Added"])
+        XCTAssertEqual(saved.first { $0.id == mine.id }?.rating, 5)
+        XCTAssertEqual(saved.first { $0.id == theirs.id }?.tags, ["fantasy"])
+        XCTAssertEqual(store.books, saved)
+
+        // A book deleted here stays deleted when the other process still lists it.
+        Thread.sleep(forTimeInterval: 0.05)
+        try LibraryIndex.save(saved, to: work)
+        store.delete([added.id])
+        XCTAssertFalse(try LibraryIndex.load(from: work).contains { $0.id == added.id })
+    }
+
+    @MainActor
+    func testUnreadableLibraryIsNotOverwritten() throws {
+        let damaged = Data("{ not a library".utf8)
+        try damaged.write(to: LibraryIndex.url(in: work))
+        let store = LibraryStore(root: work, activity: ActivityCenter())
+        XCTAssertTrue(store.indexUnreadable)
+
+        store.saveNow()
+        XCTAssertEqual(try Data(contentsOf: LibraryIndex.url(in: work)), damaged)
+        let copies = try FileManager.default.contentsOfDirectory(atPath: work.path)
+            .filter { $0.hasPrefix("library-unreadable-") }
+        XCTAssertEqual(copies.count, 1)
+        XCTAssertEqual(try Data(contentsOf: work.appending(path: copies[0])), damaged)
+
+        store.startEmptyLibrary()
+        XCTAssertFalse(store.indexUnreadable)
+        XCTAssertEqual(try LibraryIndex.load(from: work), [])
+    }
+
+    func testUnreadableCompanionIsKept() throws {
+        let damaged = Data("nonsense".utf8)
+        try damaged.write(to: CompanionIndex.url(in: work))
+        XCTAssertEqual(CompanionIndex.load(from: work), Companion())
+        let copies = try FileManager.default.contentsOfDirectory(atPath: work.path)
+            .filter { $0.hasPrefix("companion-unreadable-") }
+        XCTAssertEqual(copies.count, 1)
+        XCTAssertEqual(try Data(contentsOf: work.appending(path: copies[0])), damaged)
+    }
+
+    func testPlacingABookOnADeviceKeepsTheOldCopyUntilTheNewOneIsThere() throws {
+        let fm = FileManager.default
+        let device = work.appending(path: "device")
+        try fm.createDirectory(at: device.appending(path: "Old"), withIntermediateDirectories: true)
+        try Data("old".utf8).write(to: device.appending(path: "Old/Book.epub"))
+        let built = work.appending(path: "built.epub")
+        try Data("new".utf8).write(to: built)
+
+        // A copy that fails leaves the book the device already has.
+        XCTAssertThrowsError(try DeviceScanner.place(work.appending(path: "missing.epub"), at: "New/Book.epub",
+                                                     replacing: "Old/Book.epub", on: device))
+        XCTAssertEqual(try Data(contentsOf: device.appending(path: "Old/Book.epub")), Data("old".utf8))
+        XCTAssertEqual(try fm.contentsOfDirectory(atPath: device.appending(path: "New").path), [])
+
+        // Moving to a new folder removes the old copy and the folder it leaves empty.
+        try DeviceScanner.place(built, at: "New/Book.epub", replacing: "Old/Book.epub", on: device)
+        XCTAssertEqual(try Data(contentsOf: device.appending(path: "New/Book.epub")), Data("new".utf8))
+        XCTAssertFalse(fm.fileExists(atPath: device.appending(path: "Old").path))
+        XCTAssertEqual(try fm.contentsOfDirectory(atPath: device.appending(path: "New").path), ["Book.epub"])
+
+        // The same path in different case is the same file, and is replaced, not removed.
+        try Data("newer".utf8).write(to: built)
+        try DeviceScanner.place(built, at: "New/Book.epub", replacing: "new/book.EPUB", on: device)
+        XCTAssertEqual(try Data(contentsOf: device.appending(path: "New/Book.epub")), Data("newer".utf8))
+    }
+
+    func testDamagedDeviceFilesAreSetAsideBeforeRemoval() throws {
+        let fm = FileManager.default
+        let device = work.appending(path: "device"), kept = work.appending(path: "kept")
+        try fm.createDirectory(at: device, withIntermediateDirectories: true)
+        try Data("half a book".utf8).write(to: device.appending(path: "broken.epub"))
+        try fm.copyItem(at: try makeEPUB(), to: device.appending(path: "fine.epub"))
+
+        let removable = KoboTidy.setAside(["broken.epub", "fine.epub", "absent.epub"], on: device, to: kept)
+        XCTAssertEqual(removable, ["broken.epub"], "a file that opens after all stays on the device")
+        XCTAssertEqual(try Data(contentsOf: kept.appending(path: "broken.epub")), Data("half a book".utf8))
+        // A second file of the same name doesn't replace the first copy.
+        XCTAssertEqual(KoboTidy.setAside(["broken.epub"], on: device, to: kept), ["broken.epub"])
+        XCTAssertEqual(try fm.contentsOfDirectory(atPath: kept.path).count, 2)
+    }
+
     /// Imports a folder of books into a temporary library and prints what was read and what the clean-up
     /// would change: `NIGHTSTAND_SURVEY=/path/to/folder swift test --filter FolderSurvey`
     // MARK: Updates

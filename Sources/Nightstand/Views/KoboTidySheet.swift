@@ -148,7 +148,7 @@ struct KoboTidySheet: View {
                 if !plan.damaged.isEmpty {
                     Toggle(isOn: $options.removeDamaged) {
                         Text("Remove damaged files (\(plan.damaged.count))")
-                        Text(plan.damaged.map { ($0 as NSString).lastPathComponent }.joined(separator: ", ") + " can't be opened, probably from a copy that didn't finish.")
+                        Text(plan.damaged.map { ($0 as NSString).lastPathComponent }.joined(separator: ", ") + " can't be opened, probably from a copy that didn't finish. A copy of each is kept in Nightstand Library › Kobo Backups › Removed from Kobo.")
                             .lineLimit(3)
                     }
                 }

@@ -41,7 +41,11 @@ final class LibraryStore {
     var companion = Companion() {
         didSet {
             guard companion != oldValue, !loadingCompanion else { return }
-            try? CompanionIndex.save(companion, to: root)
+            do {
+                try CompanionIndex.save(companion, to: root)
+            } catch {
+                activity.flash("Couldn't save your wishlist and shelves", detail: error.localizedDescription)
+            }
             companionModification = CompanionIndex.modificationDate(in: root)
         }
     }
@@ -54,6 +58,15 @@ final class LibraryStore {
     private var indexURL: URL { root.appending(path: "library.json") }
     private var pendingSave: Task<Void, Never>?
     private var hasUnsavedChanges = false
+    /// When the oldest change still waiting to be saved was made, so a run of edits can't put saving off for long.
+    private var unsavedSince: Date?
+    /// Each book as the index held it when this process last read or wrote it: what tells an edit made here
+    /// from one made by another process when the two are merged.
+    private var baseline: [UUID: Book] = [:]
+    private var saveFailing = false
+    /// The index exists but could not be read when the app opened. Nothing is saved over it until the reader
+    /// chooses to start again; see `startEmptyLibrary`.
+    private(set) var indexUnreadable = false
     /// The index's modification date as this process last read or wrote it.
     private var knownModification: Date?
     private var watcher: Timer?
@@ -69,7 +82,7 @@ final class LibraryStore {
         self.root = root
         self.activity = activity
         try? FileManager.default.createDirectory(at: booksFolder, withIntermediateDirectories: true)
-        load()
+        load(initial: true)
         clearRatingsCopiedFromFiles()
         // The MCP server (an AI assistant) may edit the index while the app is open.
         watcher = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -91,17 +104,34 @@ final class LibraryStore {
 
     // MARK: Persistence
 
-    private func load() {
+    private func load(initial: Bool = false) {
         do {
             let loaded = try LibraryIndex.load(from: root)
             if loaded != books { withAnimation(.snappy) { books = loaded } }
+            baseline = Self.byID(loaded)
         } catch {
-            // Never overwrite an index we could not read; keep it for recovery.
-            let backup = root.appending(path: "library-unreadable-\(Int(Date().timeIntervalSince1970)).json")
-            try? FileManager.default.copyItem(at: indexURL, to: backup)
+            // Never overwrite an index we could not read without keeping it for recovery. When the app is
+            // opening there is nothing in memory to save instead, so saving stops until the reader decides.
+            LibraryIndex.keepUnreadableCopy(in: root)
+            if initial { indexUnreadable = true }
         }
         knownModification = LibraryIndex.modificationDate(in: root)
         loadCompanion()
+    }
+
+    private static func byID(_ books: [Book]) -> [UUID: Book] {
+        Dictionary(books.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// Gives up on an index that could not be read (a copy of it stays in the library folder) and starts again
+    /// with no books.
+    func startEmptyLibrary() {
+        guard indexUnreadable else { return }
+        indexUnreadable = false
+        books = []
+        baseline = [:]
+        knownModification = LibraryIndex.modificationDate(in: root)
+        saveNow()
     }
 
     /// Once: takes away ratings that earlier versions copied out of book files when they were added.
@@ -135,24 +165,58 @@ final class LibraryStore {
     func reloadIfChanged() {
         // An assistant may have added recommendations.
         if CompanionIndex.modificationDate(in: root) != companionModification { loadCompanion() }
-        guard !hasUnsavedChanges, LibraryIndex.modificationDate(in: root) != knownModification else { return }
+        guard !hasUnsavedChanges, !indexUnreadable,
+              LibraryIndex.modificationDate(in: root) != knownModification else { return }
         load()
     }
 
-    private func scheduleSave() {
+    /// Saves shortly after the last of a run of edits, and at most two seconds after the first.
+    private func scheduleSave(after wait: TimeInterval = 0.4) {
         hasUnsavedChanges = true
+        let now = Date(), since = unsavedSince ?? now
+        unsavedSince = since
+        let delay = max(0, min(wait, 2 - now.timeIntervalSince(since)))
         pendingSave?.cancel()
         pendingSave = Task {
-            try? await Task.sleep(for: .milliseconds(400))
+            try? await Task.sleep(for: .seconds(delay))
             if !Task.isCancelled { saveNow() }
         }
     }
 
+    /// Writes the index. If another process (an assistant) has written it since this one last looked, its
+    /// changes are merged in first instead of being overwritten.
     func saveNow() {
         pendingSave?.cancel()
-        try? LibraryIndex.save(books, to: root)
-        hasUnsavedChanges = false
-        knownModification = LibraryIndex.modificationDate(in: root)
+        guard !indexUnreadable else { return }
+        do {
+            if LibraryIndex.modificationDate(in: root) != knownModification {
+                do {
+                    let merged = LibraryIndex.merge(mine: books, theirs: try LibraryIndex.load(from: root),
+                                                    baseline: baseline)
+                    if merged != books { withAnimation(.snappy) { books = merged } }
+                } catch {
+                    // What is on disk can't be read; what is in memory is good, so it replaces it.
+                    LibraryIndex.keepUnreadableCopy(in: root)
+                }
+            }
+            try LibraryIndex.save(books, to: root)
+            baseline = Self.byID(books)
+            hasUnsavedChanges = false
+            unsavedSince = nil
+            saveFailing = false
+            knownModification = LibraryIndex.modificationDate(in: root)
+        } catch {
+            // The changes stay in memory and are tried again; the reader is told once, not every few seconds.
+            hasUnsavedChanges = true
+            if !saveFailing {
+                activity.flash("Couldn't save your library", detail: error.localizedDescription)
+            }
+            saveFailing = true
+            pendingSave = Task {
+                try? await Task.sleep(for: .seconds(5))
+                if !Task.isCancelled { saveNow() }
+            }
+        }
     }
 
     // MARK: Editing
@@ -276,12 +340,13 @@ final class LibraryStore {
 
     // MARK: Books without a file
 
-    /// Adds many books without files at once, as an import does. Saving is left to the caller.
+    /// Adds many books without files at once, as an import does.
     func addWithoutFiles(_ added: [Book]) {
         for book in added {
             try? FileManager.default.createDirectory(at: folder(for: book), withIntermediateDirectories: true)
         }
         withAnimation(.snappy) { books.append(contentsOf: added) }
+        scheduleSave()
     }
 
     /// Adds a book you've read but don't have a file for, with its cover when one is known. A wishlist entry
@@ -423,6 +488,8 @@ final class LibraryStore {
                     duplicates += 1
                 } else {
                     withAnimation(.snappy) { books.insert(book, at: 0) }
+                    // Marks the library as changed, so an edit by an assistant mid-import can't replace it.
+                    scheduleSave()
                     added += 1
                 }
             } catch {

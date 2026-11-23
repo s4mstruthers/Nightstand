@@ -188,11 +188,68 @@ enum DeviceScanner {
         return manifest
     }
 
-    static func writeManifest(_ manifest: [UUID: String], on root: URL) {
+    /// False when the manifest could not be written, as when the device is full or has been unplugged.
+    @discardableResult
+    static func writeManifest(_ manifest: [UUID: String], on root: URL) -> Bool {
         var raw: [String: String] = [:]
         for (key, value) in manifest { raw[key.uuidString] = value }
-        guard let data = try? JSONEncoder().encode(raw) else { return }
-        try? data.write(to: root.appending(path: manifestName), options: .atomic)
+        guard let data = try? JSONEncoder().encode(raw) else { return false }
+        return (try? data.write(to: root.appending(path: manifestName), options: .atomic)) != nil
+    }
+
+    enum PlacementError: LocalizedError {
+        case noSpace(needed: Int64, free: Int64)
+
+        var errorDescription: String? {
+            switch self {
+            case .noSpace(let needed, let free):
+                let format = { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
+                return "Not enough space on the device: the book needs \(format(needed)) and \(format(free)) is free."
+            }
+        }
+    }
+
+    /// Whether two paths on a device name the same file. E-readers' file systems ignore case.
+    static func samePath(_ a: String, _ b: String) -> Bool {
+        a.compare(b, options: [.caseInsensitive]) == .orderedSame
+    }
+
+    /// Puts a built book at `path` on the device. The copy the device already has, whether at `path` or at
+    /// `previous`, is only removed once the new one has been copied over whole, so a full device or a pulled
+    /// cable never leaves the reader without the book.
+    static func place(_ built: URL, at path: String, replacing previous: String?, on root: URL) throws {
+        let fm = FileManager.default
+        let destination = root.appending(path: path)
+        let folder = destination.deletingLastPathComponent()
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+
+        let size = Int64((try? built.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        if let free = (try? root.resourceValues(forKeys: [.volumeAvailableCapacityKey]).volumeAvailableCapacity)
+            .map(Int64.init), free < size + 1_000_000 {
+            throw PlacementError.noSpace(needed: size, free: free)
+        }
+
+        // Named so that neither the e-reader nor a scan of the device takes it for a book.
+        let incoming = folder.appending(path: ".nightstand-incoming-\(UUID().uuidString)")
+        do {
+            try fm.copyItem(at: built, to: incoming)
+            try? fm.removeItem(at: destination)
+            try fm.moveItem(at: incoming, to: destination)
+        } catch {
+            try? fm.removeItem(at: incoming)
+            throw error
+        }
+
+        if let previous, !samePath(previous, path) {
+            let old = root.appending(path: previous)
+            try? fm.removeItem(at: old)
+            // Don't leave the old folder behind empty.
+            let oldFolder = old.deletingLastPathComponent()
+            if oldFolder.standardizedFileURL.path != root.standardizedFileURL.path,
+               ((try? fm.contentsOfDirectory(atPath: oldFolder.path)) ?? ["?"]).allSatisfy({ $0.hasPrefix(".") }) {
+                try? fm.removeItem(at: oldFolder)
+            }
+        }
     }
 }
 
@@ -267,16 +324,30 @@ final class DeviceManager {
 
     // MARK: Sending
 
+    /// The last send started for each device. Sends to one device run one after another, so two of them
+    /// never write its manifest at once.
+    private var sendQueue: [String: Task<Void, Never>] = [:]
+
     func send(_ books: [Book], to deviceID: String, store: LibraryStore, options: FormatOptions) async {
+        let earlier = sendQueue[deviceID]
+        let task = Task {
+            await earlier?.value
+            await sendNow(books, to: deviceID, store: store, options: options)
+        }
+        sendQueue[deviceID] = task
+        await task.value
+    }
+
+    private func sendNow(_ books: [Book], to deviceID: String, store: LibraryStore, options: FormatOptions) async {
         // Books you've read without a file have nothing to send.
         let books = books.filter(\.hasFile)
         guard let device = device(deviceID), !books.isEmpty else { return }
-        var manifest = device.manifest
         var sent = 0
         var problems: [String] = []
         let profile = device.kind.profile
         let kind = device.kind
         let layout = FolderLayout.current
+        let root = device.url
 
         for (index, book) in books.enumerated() {
             activity.set("Sending to \(device.name)…", detail: book.title,
@@ -284,47 +355,34 @@ final class DeviceManager {
             let source = store.fileURL(for: book)
             // The library's cover always goes into the file: the one embedded in it can be a placeholder.
             let cover = book.hasCover ? store.coverURL(for: book) : nil
-            let previous = manifest[book.id]
             do {
-                let path = try await Task.detached(priority: .userInitiated) {
+                let recorded = try await Task.detached(priority: .userInitiated) {
                     let built = try BookBuilder.build(book: book, source: source, customCover: cover,
                                                       options: options, profile: profile)
                     defer { try? FileManager.default.removeItem(at: built.deletingLastPathComponent()) }
                     let path = layout.path(for: book, fileName: built.lastPathComponent, on: kind)
-                    let fm = FileManager.default
-                    if let previous, previous != path {
-                        let old = device.url.appending(path: previous)
-                        try? fm.removeItem(at: old)
-                        // Don't leave the old folder behind empty.
-                        let folder = old.deletingLastPathComponent()
-                        if folder.path != device.url.path,
-                           ((try? fm.contentsOfDirectory(atPath: folder.path)) ?? ["?"]).allSatisfy({ $0.hasPrefix(".") }) {
-                            try? fm.removeItem(at: folder)
-                        }
-                    }
-                    let destination = device.url.appending(path: path)
-                    try fm.createDirectory(at: destination.deletingLastPathComponent(),
-                                           withIntermediateDirectories: true)
-                    try? fm.removeItem(at: destination)
-                    try fm.copyItem(at: built, to: destination)
+                    // Read afresh for every book, and written straight after it, so the device's record is right
+                    // however far a send gets and whatever else has changed it meanwhile.
+                    var manifest = DeviceScanner.readManifest(on: root)
+                    try DeviceScanner.place(built, at: path, replacing: manifest[book.id], on: root)
                     if kind == .kobo, let cover {
-                        KoboCovers.refresh(for: path, cover: cover, on: device.url)
+                        KoboCovers.refresh(for: path, cover: cover, on: root)
                     }
-                    return path
+                    manifest[book.id] = path
+                    return DeviceScanner.writeManifest(manifest, on: root)
                 }.value
-                manifest[book.id] = path
                 sent += 1
+                if !recorded {
+                    problems.append("\(book.title) was copied, but \(device.name) couldn't be updated to show it as sent.")
+                }
             } catch {
                 problems.append("\(book.title): \(error.localizedDescription)")
             }
         }
 
-        let root = device.url
-        let finalManifest = manifest
-        await Task.detached { DeviceScanner.writeManifest(finalManifest, on: root) }.value
         refresh()
         let summary = "Sent \(sent) of \(books.count) to \(device.name)"
-        activity.flash(problems.isEmpty ? "Sent \(sent) book\(sent == 1 ? "" : "s") to \(device.name)" : summary,
+        activity.flash(sent == books.count ? "Sent \(sent) book\(sent == 1 ? "" : "s") to \(device.name)" : summary,
                        detail: problems.first)
     }
 
@@ -332,7 +390,8 @@ final class DeviceManager {
 
     func remove(bookIDs: Set<UUID>, from deviceID: String) {
         guard let device = device(deviceID) else { return }
-        var manifest = device.manifest
+        // From the device itself: the copy in memory can be behind a send that is still going.
+        var manifest = DeviceScanner.readManifest(on: device.url)
         for id in bookIDs {
             guard let path = manifest.removeValue(forKey: id) else { continue }
             try? FileManager.default.removeItem(at: device.url.appending(path: path))

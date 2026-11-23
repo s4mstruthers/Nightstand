@@ -127,11 +127,17 @@ enum CompanionIndex {
         try? url(in: root).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
     }
 
+    /// An empty companion when there is none yet. One that exists but cannot be read is copied aside first,
+    /// since the next save replaces it.
     static func load(from root: URL) -> Companion {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
+        guard FileManager.default.fileExists(atPath: url(in: root).path) else { return Companion() }
         guard let data = try? Data(contentsOf: url(in: root)),
-              let companion = try? decoder.decode(Companion.self, from: data) else { return Companion() }
+              let companion = try? decoder.decode(Companion.self, from: data) else {
+            KeptCopy.keep(url(in: root), as: "companion-unreadable")
+            return Companion()
+        }
         return companion
     }
 

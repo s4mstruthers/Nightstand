@@ -550,13 +550,15 @@ final class AppModel {
             }
             // Finished books come off the device first, so they aren't replaced only to be removed.
             var removedFinished = 0
+            // Folders that books are taken out of, checked for emptiness at the end.
+            var emptied: [String] = []
             if !options.removeDamaged { plan.damaged = [] }
             if options.removeFinished {
                 let finished = plan.finished.filter { !options.skipped.contains($0.bookID) }
                 let gone = Set(finished.map(\.bookID))
                 for book in finished {
                     try? fm.removeItem(at: root.appending(path: book.path))
-                    plan.damaged.append(book.path)  // its folder is checked for emptiness with the others
+                    emptied.append(book.path)
                 }
                 var manifest = DeviceScanner.readManifest(on: root)
                 for id in gone { manifest[id] = nil }
@@ -585,7 +587,12 @@ final class AppModel {
             let books = plan.replacements.compactMap { store.book($0.bookID) }
             await devices.send(books, to: deviceID, store: store, options: settings.format)
 
-            // 5. Save positions, then remove the old copies and leftovers.
+            // 5. Save positions, then remove the old copies and leftovers. A damaged file only goes once it has
+            // failed to open a second time and a copy of it is in the library folder.
+            let damaged = await Task.detached { [paths = plan.damaged] in
+                KoboTidy.setAside(paths, on: root, to: backups.appending(path: "Removed from Kobo"))
+            }.value
+            let emptiedFolders = emptied
             let manifest = DeviceScanner.readManifest(on: root)
             var pending = KoboTidy.pending(on: root)
             var replaced = 0
@@ -626,8 +633,11 @@ final class AppModel {
                         folders.insert((replacement.oldPath as NSString).deletingLastPathComponent)
                     }
                 }
-                for path in plan.damaged {
+                for path in damaged {
                     try? fm.removeItem(at: root.appending(path: path))
+                    folders.insert((path as NSString).deletingLastPathComponent)
+                }
+                for path in emptiedFolders {
                     folders.insert((path as NSString).deletingLastPathComponent)
                 }
                 // Remove folders the old copies leave empty, and their parents if those empty too.

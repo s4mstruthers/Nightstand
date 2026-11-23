@@ -419,4 +419,41 @@ enum LibraryIndex {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(File(books: books)).write(to: url(in: root), options: .atomic)
     }
+
+    /// Brings together the books in memory and those another process has since written to the index.
+    /// `baseline` is each book as this process last read or wrote it. A book changed only on one side takes
+    /// that side's version, a book changed on both keeps the one in memory, and a book added or removed on
+    /// either side is added or removed.
+    static func merge(mine: [Book], theirs: [Book], baseline: [UUID: Book]) -> [Book] {
+        let theirsByID = Dictionary(theirs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var merged: [Book] = []
+        for book in mine {
+            let unchangedHere = baseline[book.id] == book
+            if let other = theirsByID[book.id] {
+                merged.append(unchangedHere ? other : book)
+            } else if !unchangedHere {
+                merged.append(book)
+            }
+        }
+        let mineIDs = Set(mine.map(\.id))
+        return merged + theirs.filter { !mineIDs.contains($0.id) && baseline[$0.id] == nil }
+    }
+
+    /// Copies an index that cannot be read to a file beside it, named for when it was last changed, so that
+    /// whatever is written next does not destroy it.
+    static func keepUnreadableCopy(in root: URL) {
+        KeptCopy.keep(url(in: root), as: "library-unreadable")
+    }
+}
+
+/// Keeps a copy of a file that could not be read, once for each version of it.
+enum KeptCopy {
+    static func keep(_ file: URL, as name: String) {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: file.path) else { return }
+        let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date()
+        let copy = file.deletingLastPathComponent()
+            .appending(path: "\(name)-\(Int(modified.timeIntervalSince1970)).\(file.pathExtension)")
+        if !fm.fileExists(atPath: copy.path) { try? fm.copyItem(at: file, to: copy) }
+    }
 }

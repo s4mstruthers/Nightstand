@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @Environment(AppModel.self) private var app
     @State private var dropTargeted = false
+    @State private var libraryUnreadable = false
 
     var body: some View {
         @Bindable var app = app
@@ -112,6 +113,15 @@ struct ContentView: View {
         } message: {
             Text("The book file, your rating and your notes are moved to the Trash.")
         }
+        .alert("Nightstand couldn't read your library", isPresented: $libraryUnreadable) {
+            Button("Quit") { NSApp.terminate(nil) }
+            Button("Start with an Empty Library", role: .destructive) { app.store.startEmptyLibrary() }
+        } message: {
+            Text("The file that lists your books, library.json in “\(app.store.root.lastPathComponent)”, is damaged. "
+                 + "Nothing has been changed, and a copy of the file has been kept beside it. Your book files are "
+                 + "still in the Books folder. Quit to repair or restore the file, or start again with no books.")
+        }
+        .onAppear { libraryUnreadable = app.store.indexUnreadable }
         .onChange(of: app.sidebar) { old, new in
             // A book picked on Home, Discover or Journal doesn't follow you to another page, and moving between
             // lists keeps only the selected books that are in the new list, so nothing is selected out of sight.
