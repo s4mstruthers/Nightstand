@@ -170,6 +170,10 @@ private struct BookInspector: View {
             .padding(18)
             .animation(.snappy, value: book.status)
         }
+        // Keeps the scroll view a point clear of the toolbar. Touching it, macOS 27 insets the content for the
+        // toolbar twice but hit-tests it as if once, so every button is drawn a toolbar's height below where
+        // it can be clicked.
+        .padding(.top, 1)
     }
 
     private func readingProgress(_ book: Book) -> some View {
