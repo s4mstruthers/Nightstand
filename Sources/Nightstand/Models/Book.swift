@@ -495,20 +495,30 @@ enum SeriesList {
     }
 
     static func entries(in books: [Book], order: SeriesOrder) -> [Entry] {
-        let entries = Dictionary(grouping: books.filter { !key($0.series).isEmpty }) { key($0.series) }.values.map { books in
-            Entry(name: mostCommon(books.compactMap(\.series)) ?? "", count: books.count,
-                  lastRead: books.compactMap(\.lastRead).max(), genre: mostCommon(books.flatMap(\.tags)))
+        var grouped: [String: [Book]] = [:]
+        for book in books {
+            let seriesKey = key(book.series)
+            if !seriesKey.isEmpty { grouped[seriesKey, default: []].append(book) }
+        }
+        let entries: [Entry] = grouped.values.map { books in
+            let lastRead: Date? = books.compactMap(\.lastRead).max()
+            return Entry(name: mostCommon(books.compactMap(\.series)) ?? "", count: books.count,
+                         lastRead: lastRead, genre: mostCommon(books.flatMap(\.tags)))
         }
         func byName(_ a: Entry, _ b: Entry) -> Bool { a.name.localizedStandardCompare(b.name) == .orderedAscending }
         switch order {
         case .name, .genre:
             return entries.sorted(by: byName)
         case .size:
-            return entries.sorted { $0.count != $1.count ? $0.count > $1.count : byName($0, $1) }
+            return entries.sorted { (a: Entry, b: Entry) -> Bool in
+                if a.count != b.count { return a.count > b.count }
+                return byName(a, b)
+            }
         case .recent:
-            return entries.sorted {
-                let a = $0.lastRead ?? .distantPast, b = $1.lastRead ?? .distantPast
-                return a != b ? a > b : byName($0, $1)
+            return entries.sorted { (a: Entry, b: Entry) -> Bool in
+                let first: Date = a.lastRead ?? .distantPast, second: Date = b.lastRead ?? .distantPast
+                if first != second { return first > second }
+                return byName(a, b)
             }
         }
     }
@@ -516,14 +526,24 @@ enum SeriesList {
     /// The series under the genre each belongs to, genres in alphabetical order and those without one last.
     static func byGenre(_ entries: [Entry]) -> [(genre: String, series: [Entry])] {
         let groups = Dictionary(grouping: entries) { $0.genre ?? "" }
-        return groups.keys.sorted {
-            $0.isEmpty != $1.isEmpty ? !$0.isEmpty : $0.localizedStandardCompare($1) == .orderedAscending
-        }.map { (genre: $0.isEmpty ? "No Genre" : $0, series: groups[$0] ?? []) }
+        let genres: [String] = groups.keys.sorted { (a: String, b: String) -> Bool in
+            if a.isEmpty != b.isEmpty { return !a.isEmpty }
+            return a.localizedStandardCompare(b) == .orderedAscending
+        }
+        return genres.map { genre in
+            (genre: genre.isEmpty ? "No Genre" : genre, series: groups[genre] ?? [])
+        }
     }
 
     /// The most frequent value; of equally frequent ones, the first alphabetically, so it never flips.
     private static func mostCommon(_ values: [String]) -> String? {
-        Dictionary(values.map { ($0, 1) }, uniquingKeysWith: +)
-            .max { $0.value != $1.value ? $0.value < $1.value : $0.key > $1.key }?.key
+        var counts: [String: Int] = [:]
+        for value in values { counts[value, default: 0] += 1 }
+        var best: (name: String, count: Int)?
+        for (name, count) in counts {
+            if let current = best, count < current.count || (count == current.count && name > current.name) { continue }
+            best = (name, count)
+        }
+        return best?.name
     }
 }
